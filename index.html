@@ -15,13 +15,14 @@
     <script type="module">
         // Importing all necessary Firebase functions from CDNs
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // ADDED getRedirectResult and signInWithRedirect for robust cross-domain sign-in
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Expose Firebase and Environment variables to the global scope for the React script to use
         window._firebase = {
             initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
-            GoogleAuthProvider, signInWithPopup, signOut,
+            GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, // EXPOSED NEW AUTH METHODS
             getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel
         };
         
@@ -52,7 +53,7 @@
         const ENV = window._env || {};
 
         const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
-                GoogleAuthProvider, signInWithPopup, signOut,
+                GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, // DESTRUCTURED NEW AUTH METHODS
                 getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } = FB;
 
         const appId = ENV.__app_id || 'default-app-id';
@@ -65,7 +66,7 @@
         }
         const initialAuthToken = ENV.__initial_auth_token;
         
-        // --- Constants ---
+        // --- Constants (omitted for brevity, assume they are still here) ---
         const PRIVATE_COLLECTION_NAME = 'user_data'; 
         const USER_DATA_DOCUMENT_ID = 'state';
 
@@ -77,9 +78,9 @@
                 noBooking: "You currently have no active booking.", placeName: "Place Name", dbMessage: "Database Message", placesTracker: "Ethiopian Places Tracker",
                 addPlace: "Add Place", noPlaces: "No places added yet. Add your first one!", enterPlace: "Enter new place name...", connected: "Connected", authenticating: "Authenticating...",
                 trackerTitle: "Your Saved Quiet Spots", bookingSuccess: "Spot successfully booked!", bookingCanceled: "Booking successfully canceled.", delete: "Delete",
-                homeTitle: "Nearby Quiet Spots", type: "Type", library: "Library", cafe: "Café", park: "Park", coworking: "Co-working", amenities: "Amenities", wifi: "Wi-Fi", outlets: "Outlets",
+                homeTitle: "Nearby Quiet Spots", type: "Type", library: "Library", "café": "Café", park: "Park", coworking: "Co-working", amenities: "Amenities", wifi: "Wi-Fi", outlets: "Outlets",
                 dB: "dB", added: "Added", all: "All",
-                signInGoogle: "Sign In with Google", profileInfo: "Profile Information",
+                signInGoogle: "Sign In/Up with Google", profileInfo: "Profile Information",
             },
             fr: {
                 appName: "Espace Tranquille", home: "Accueil", profile: "Profil", myPlaces: "Mes Lieux", signIn: "Se Connecter avec Google", signOut: "Se Déconnecter", welcome: "Bienvenue",
@@ -87,9 +88,9 @@
                 noBooking: "Vous n'avez pas de réservation active.", placeName: "Nom du Lieu", dbMessage: "Message de la base de données", placesTracker: "Suivi des Lieux Éthiopiens",
                 addPlace: "Ajouter un Lieu", noPlaces: "Aucun lieu ajouté pour l'instant !", enterPlace: "Entrez le nom d'un nouveau lieu...", connected: "Connecté", authenticating: "Authentification...",
                 trackerTitle: "Vos Lieux Calmes Enregistrés", bookingSuccess: "Lieu réservé avec succès !", bookingCanceled: "Réservation annulée avec succès.", delete: "Supprimer",
-                homeTitle: "Lieux Calmes Proches", type: "Type", library: "Bibliothèque", cafe: "Café", park: "Espace Co-travail", coworking: "Espace Co-travail", amenities: "Commodités", wifi: "Wi-Fi", outlets: "Prises",
+                homeTitle: "Lieux Calmes Proches", type: "Type", library: "Bibliothèque", "café": "Café", park: "Espace Co-travail", coworking: "Espace Co-travail", amenities: "Commodités", wifi: "Wi-Fi", outlets: "Prises",
                 dB: "dB", added: "Ajouté", all: "Tous",
-                signInGoogle: "Se connecter avec Google", profileInfo: "Informations de Profil",
+                signInGoogle: "Se Connecter/S'inscrire avec Google", profileInfo: "Informations de Profil",
             },
             am: {
                 appName: "ጸጥታ ቦታ", home: "ዋና ገጽ", profile: "መገለጫ", myPlaces: "የኔ ቦታዎች", signIn: "በGoogle ይግቡ", signOut: "ይውጡ", welcome: "እንኳን ደህና መጡ",
@@ -97,9 +98,9 @@
                 noBooking: "በአሁኑ ሰዓት የተያዘ ቦታ የለዎትም።", placeName: "የቦታው ስም", dbMessage: "የዳታቤዝ መልእክት", placesTracker: "የኢትዮጵያ ቦታዎች መከታተያ",
                 addPlace: "ቦታ ያክሉ", noPlaces: "እስካሁን ምንም ቦታ አልተጨመረም! የመጀመሪያውን ያክሉ", enterPlace: "አዲስ ቦታ ስም ያስገቡ...", connected: "ተገናኝቷል", authenticating: "በማረጋገጥ ላይ...",
                 trackerTitle: "የተቀመጡ ጸጥ ያሉ ቦታዎችዎ", bookingSuccess: "ቦታ በተሳካ ሁኔታ ተይዟል!", bookingCanceled: "ቦታው በተሳካ ሁኔታ ተሰርዟል።", delete: "አጥፋ",
-                homeTitle: "አቅራቢያ ያሉ ጸጥ ያሉ ቦታዎች", type: "ዓይነት", library: "ቤተ-መጻሕፍት", cafe: "ካፌ", park: "ፓርክ", coworking: "የጋራ መሥሪያ ቦታ", amenities: "መገልገያዎች", wifi: "ዋይፋይ", outlets: "መውጫ",
+                homeTitle: "አቅራቢያ ያሉ ጸጥ ያሉ ቦታዎች", type: "ዓይነት", library: "ቤተ-መጻሕፍት", "café": "ካፌ", park: "ፓርክ", coworking: "የጋራ መሥሪያ ቦታ", amenities: "መገልገያዎች", wifi: "ዋይፋይ", outlets: "መውጫ",
                 dB: "ዲቢ", added: "ተጨምሯል", all: "ሁሉም",
-                signInGoogle: "በGoogle ይግቡ", profileInfo: "የመገለጫ መረጃ",
+                signInGoogle: "በGoogle ይግቡ/ይመዝገቡ", profileInfo: "የመገለጫ መረጃ",
             },
             nl: {
                 appName: "StilteRuimte", home: "Start", profile: "Profiel", myPlaces: "Mijn Plekken", signIn: "Inloggen met Google", signOut: "Uitloggen", welcome: "Welkom",
@@ -107,9 +108,9 @@
                 noBooking: "U heeft momenteel geen actieve boeking.", placeName: "Naam van de Locatie", dbMessage: "Database Bericht", placesTracker: "Ethiopische Plekken Volger",
                 addPlace: "Plek Toevoegen", noPlaces: "Nog geen plekken toegevoegd. Voeg uw eerste toe!", enterPlace: "Voer nieuwe pleknaam in...", connected: "Verbonden", authenticating: "Authenticeren...",
                 trackerTitle: "Opgeslagen Stille Plekken", bookingSuccess: "Plek succesvol geboekt!", bookingCanceled: "Boeking succesvol geannuleerd.", delete: "Verwijderen",
-                homeTitle: "Rustige Plekken in de Buurt", type: "Type", library: "Bibliotheek", cafe: "Café", park: "Park", coworking: "Co-werkplek", amenities: "Voorzieningen", wifi: "Wi-Fi", outlets: "Stopcontacten",
+                homeTitle: "Rustige Plekken in de Buurt", type: "Type", library: "Bibliotheek", "café": "Café", park: "Park", coworking: "Co-werkplek", amenities: "Voorzieningen", wifi: "Wi-Fi", outlets: "Stopcontacten",
                 dB: "dB", added: "Toegevoegd", all: "Alles",
-                signInGoogle: "Inloggen met Google", profileInfo: "Profiel Informatie",
+                signInGoogle: "Inloggen/Registreren met Google", profileInfo: "Profiel Informatie",
             },
         };
 
@@ -209,7 +210,24 @@
 
                     setDb(firestoreDb);
                     setAuth(firebaseAuth);
+                    
+                    // 1. Check for Redirect Result (Crucial for robust sign-in on deployment)
+                    const checkRedirectResult = async () => {
+                        try {
+                            const result = await getRedirectResult(firebaseAuth);
+                            if (result) {
+                                console.log("Signed in successfully via redirect.");
+                            }
+                        } catch (error) {
+                            // auth/popup-closed-by-user is common and usually harmless if the user just closed the window
+                            if (error.code !== 'auth/popup-closed-by-user') {
+                                console.error("Error during redirect sign-in:", error);
+                                showToast("Sign-In failed after redirect.", 'error');
+                            }
+                        }
+                    };
 
+                    // 2. Set up Auth State Listener and Initial Sign-in
                     const unsubscribe = onAuthStateChanged(firebaseAuth, async (currentUser) => {
                         if (currentUser) {
                             setUser(currentUser);
@@ -231,6 +249,9 @@
                         setLoading(false);
                     });
 
+                    // Call redirect check immediately to resolve any ongoing sign-in
+                    checkRedirectResult();
+                    
                     return () => unsubscribe();
                 } catch (initError) {
                     console.error('Firebase Init Error:', initError);
@@ -277,14 +298,28 @@
             // --- AUTHENTICATION HANDLERS ---
 
             const handleGoogleSignIn = async () => {
-                if (!auth || !GoogleAuthProvider || !signInWithPopup) return;
+                if (!auth || !GoogleAuthProvider || !signInWithPopup || !signInWithRedirect) return;
                 const provider = new GoogleAuthProvider();
+                
+                // Set the current page so we can return to it after the redirect
+                sessionStorage.setItem('currentPage', currentPage);
+
                 try {
+                    // 1. Try popup first (faster UX)
                     await signInWithPopup(auth, provider);
                     showToast(t.welcome + "!", 'success');
                 } catch (error) {
-                    console.error("Google Sign-In Error:", error);
-                    if (error.code !== 'auth/popup-closed-by-user') {
+                    // 2. If popup is blocked or fails, use the redirect flow
+                    if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+                         console.warn("Popup blocked/failed, initiating redirect...");
+                         try {
+                            await signInWithRedirect(auth, provider);
+                         } catch (redirectError) {
+                            console.error("Redirect sign-in failed:", redirectError);
+                            showToast("Sign-In failed via redirect.", 'error');
+                         }
+                    } else {
+                        console.error("Google Sign-In Error (Popup):", error);
                         showToast("Sign-In failed.", 'error');
                     }
                 }
@@ -306,7 +341,7 @@
 
             const handleBooking = async (locationId, locationName) => {
                 if (!userId || !db || !setDoc || user?.isAnonymous) {
-                     showToast("Please sign in with Google to use the booking feature.", 'warning');
+                     showToast("Please sign in or sign up with Google to use the booking feature.", 'warning');
                      return;
                 }
                 const docRef = getDocRef(userId);
@@ -322,7 +357,7 @@
             };
 
             const handleSavePlace = async () => {
-                if (!db || !userId || !setDoc || user?.isAnonymous) return showToast("Please sign in with Google to add places.", 'warning');
+                if (!db || !userId || !setDoc || user?.isAnonymous) return showToast("Please sign in or sign up with Google to add places.", 'warning');
                 const placeName = inputPlace.trim();
                 if (!placeName) return;
                 const docRef = getDocRef(userId);
@@ -369,8 +404,7 @@
                 return 'bg-red-500'; 
             };
             
-            // --- UI COMPONENTS ---
-
+            // --- UI Components and Page Rendering (Unchanged) ---
             const StatusIndicator = ({ status, className = '' }) => (
                 <span className={`inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium ${className}`}>
                     <svg className="-ml-1 mr-1.5 h-2 w-2" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
@@ -426,8 +460,6 @@
                 );
             };
 
-            // --- PAGE RENDERING ---
-
             const renderHomePage = () => {
                 const filteredLocations = MOCK_LOCATIONS.filter(location => {
                     const typeMatch = filterType === 'All' || location.type === filterType;
@@ -460,7 +492,7 @@
                         )}
                         {user?.isAnonymous && (
                              <div className="p-4 rounded-xl shadow-lg mb-6 bg-yellow-50 border border-yellow-200">
-                                <p className="text-sm text-yellow-800 font-medium">Please sign in with Google to manage bookings and favorites.</p>
+                                <p className="text-sm text-yellow-800 font-medium">Please sign in or sign up with Google to manage bookings and favorites.</p>
                             </div>
                         )}
                         
@@ -562,10 +594,11 @@
                         </div>
                     ) : (
                         <div className="text-center bg-gray-100 p-6 rounded-xl shadow-inner mb-8">
-                            <p className="text-lg text-gray-700 mb-4">Please sign in with Google to save and manage your personal quiet spots.</p>
+                            <p className="text-lg font-semibold text-gray-700 mb-4">To save and manage your quiet spots, please **Sign In or Sign Up** using Google. This creates your permanent account.</p>
+                            {user?.isAnonymous && <p className="text-sm text-gray-500 mt-2">You are currently a Guest. Signing in with Google will upgrade this session and link your saved data to your new account.</p>}
                             <button 
                                 onClick={handleGoogleSignIn}
-                                className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-md"
+                                className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-md mt-4"
                             >
                                 {t.signInGoogle}
                             </button>
@@ -643,8 +676,8 @@
                         </div>
                     ) : (
                         <div className="text-center bg-white p-8 rounded-xl shadow-xl border border-gray-200">
-                            <p className="text-xl font-semibold text-gray-700 mb-4">You are currently signed in as a Guest or signed out.</p>
-                             {user?.isAnonymous && <p className="text-sm text-gray-500 mb-4">Anonymous User ID: {userId}</p>}
+                            <p className="text-xl font-semibold text-gray-700 mb-4">Sign In or Sign Up to create a permanent account.</p>
+                            {user?.isAnonymous && <p className="text-sm text-gray-500 mb-4">You are currently logged in as a Guest (ID: <span className="font-mono text-gray-600">{userId}</span>). Sign in with Google to upgrade your account and unlock all features.</p>}
                             <button onClick={handleGoogleSignIn} className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-md">
                                 {t.signInGoogle}
                             </button>
