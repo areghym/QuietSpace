@@ -15,17 +15,17 @@
     <script type="module">
         // Importing all necessary Firebase functions from CDNs
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // ADDED getRedirectResult and signInWithRedirect for robust cross-domain sign-in
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Expose Firebase and Environment variables to the global scope for the React script to use
         window._firebase = {
             initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
-            GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, // EXPOSED NEW AUTH METHODS
+            GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, 
             getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel
         };
         
+        // Ensure all environment variables have fallbacks
         window._env = {
             __app_id: typeof __app_id !== 'undefined' ? __app_id : 'default-app-id',
             __firebase_config: typeof __firebase_config !== 'undefined' ? __firebase_config : '{}',
@@ -53,24 +53,28 @@
         const ENV = window._env || {};
 
         const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, 
-                GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, // DESTRUCTURED NEW AUTH METHODS
+                GoogleAuthProvider, signInWithPopup, signOut, signInWithRedirect, getRedirectResult, 
                 getFirestore, doc, setDoc, onSnapshot, collection, setLogLevel } = FB;
 
         const appId = ENV.__app_id || 'default-app-id';
         
-        let firebaseConfig = {};
+        // Parse the config immediately with a default fallback
+        let rawFirebaseConfig = ENV.__firebase_config || '{}';
+        let parsedFirebaseConfig = {};
         try {
-            firebaseConfig = JSON.parse(ENV.__firebase_config || '{}');
+            parsedFirebaseConfig = JSON.parse(rawFirebaseConfig);
         } catch (e) {
-            console.error("Failed to parse firebase config:", e);
+            console.error("Critical: Failed to parse Firebase config JSON:", e);
+            // Will be caught and logged in the state below
         }
+
         const initialAuthToken = ENV.__initial_auth_token;
         
-        // --- Constants (omitted for brevity, assume they are still here) ---
+        // --- Constants ---
         const PRIVATE_COLLECTION_NAME = 'user_data'; 
         const USER_DATA_DOCUMENT_ID = 'state';
 
-        // Translations (Amharic, English, French, Dutch)
+        // Translations 
         const translations = {
             en: {
                 appName: "QuietSpace", home: "Home", profile: "Profile", myPlaces: "My Places", signIn: "Sign In with Google", signOut: "Sign Out", welcome: "Welcome",
@@ -81,16 +85,9 @@
                 homeTitle: "Nearby Quiet Spots", type: "Type", library: "Library", "café": "Café", park: "Park", coworking: "Co-working", amenities: "Amenities", wifi: "Wi-Fi", outlets: "Outlets",
                 dB: "dB", added: "Added", all: "All",
                 signInGoogle: "Sign In/Up with Google", profileInfo: "Profile Information",
-            },
-            fr: {
-                appName: "Espace Tranquille", home: "Accueil", profile: "Profil", myPlaces: "Mes Lieux", signIn: "Se Connecter avec Google", signOut: "Se Déconnecter", welcome: "Bienvenue",
-                noiseMap: "Carte Sonore", explore: "Explorer", favorites: "Favoris", bookSpot: "Réserver", bookingStatus: "Réservation Active", cancelBooking: "Annuler",
-                noBooking: "Vous n'avez pas de réservation active.", placeName: "Nom du Lieu", dbMessage: "Message de la base de données", placesTracker: "Suivi des Lieux Éthiopiens",
-                addPlace: "Ajouter un Lieu", noPlaces: "Aucun lieu ajouté pour l'instant !", enterPlace: "Entrez le nom d'un nouveau lieu...", connected: "Connecté", authenticating: "Authentification...",
-                trackerTitle: "Vos Lieux Calmes Enregistrés", bookingSuccess: "Lieu réservé avec succès !", bookingCanceled: "Réservation annulée avec succès.", delete: "Supprimer",
-                homeTitle: "Lieux Calmes Proches", type: "Type", library: "Bibliothèque", "café": "Café", park: "Espace Co-travail", coworking: "Espace Co-travail", amenities: "Commodités", wifi: "Wi-Fi", outlets: "Prises",
-                dB: "dB", added: "Ajouté", all: "Tous",
-                signInGoogle: "Se Connecter/S'inscrire avec Google", profileInfo: "Informations de Profil",
+                configStatus: "Firebase Configuration Status", dbInitError: "Initialization Error", configUsed: "Firebase Config Used",
+                directions: "Get Directions", // NEW
+                anonymousFeatureWarning: "All features are enabled for Guest users. Sign in/up to save your data permanently.", // NEW
             },
             am: {
                 appName: "ጸጥታ ቦታ", home: "ዋና ገጽ", profile: "መገለጫ", myPlaces: "የኔ ቦታዎች", signIn: "በGoogle ይግቡ", signOut: "ይውጡ", welcome: "እንኳን ደህና መጡ",
@@ -101,28 +98,21 @@
                 homeTitle: "አቅራቢያ ያሉ ጸጥ ያሉ ቦታዎች", type: "ዓይነት", library: "ቤተ-መጻሕፍት", "café": "ካፌ", park: "ፓርክ", coworking: "የጋራ መሥሪያ ቦታ", amenities: "መገልገያዎች", wifi: "ዋይፋይ", outlets: "መውጫ",
                 dB: "ዲቢ", added: "ተጨምሯል", all: "ሁሉም",
                 signInGoogle: "በGoogle ይግቡ/ይመዝገቡ", profileInfo: "የመገለጫ መረጃ",
-            },
-            nl: {
-                appName: "StilteRuimte", home: "Start", profile: "Profiel", myPlaces: "Mijn Plekken", signIn: "Inloggen met Google", signOut: "Uitloggen", welcome: "Welkom",
-                noiseMap: "Geluidskaart", explore: "Verken", favorites: "Favorieten", bookSpot: "Boek Plek", bookingStatus: "Actieve Boeking", cancelBooking: "Boeking Annuleren",
-                noBooking: "U heeft momenteel geen actieve boeking.", placeName: "Naam van de Locatie", dbMessage: "Database Bericht", placesTracker: "Ethiopische Plekken Volger",
-                addPlace: "Plek Toevoegen", noPlaces: "Nog geen plekken toegevoegd. Voeg uw eerste toe!", enterPlace: "Voer nieuwe pleknaam in...", connected: "Verbonden", authenticating: "Authenticeren...",
-                trackerTitle: "Opgeslagen Stille Plekken", bookingSuccess: "Plek succesvol geboekt!", bookingCanceled: "Boeking succesvol geannuleerd.", delete: "Verwijderen",
-                homeTitle: "Rustige Plekken in de Buurt", type: "Type", library: "Bibliotheek", "café": "Café", park: "Park", coworking: "Co-werkplek", amenities: "Voorzieningen", wifi: "Wi-Fi", outlets: "Stopcontacten",
-                dB: "dB", added: "Toegevoegd", all: "Alles",
-                signInGoogle: "Inloggen/Registreren met Google", profileInfo: "Profiel Informatie",
+                configStatus: "የFirebase ማዋቀር ሁኔታ", dbInitError: "የመጀመሪያ ቅንብር ስህተት", configUsed: "ጥቅም ላይ የዋለው Firebase ማዋቀር",
+                directions: "አቅጣጫዎች ያግኙ", // NEW
+                anonymousFeatureWarning: "ሁሉም ባህሪያት ለጊዜያዊ ተጠቃሚዎች ነቅተዋል። ዳታዎን በቋሚነት ለማስቀመጥ ይመዝገቡ።", // NEW
             },
         };
 
-        // Mock Data for the Home Page
+        // Mock Data for the Home Page - UPDATED with map queries
         const MOCK_LOCATIONS = [
-            { id: 'lib001', name: 'Central City Library', type: 'Library', noiseLevel: 45, amenities: ['wifi', 'outlets'] },
-            { id: 'park002', name: 'Riverside Quiet Zone', type: 'Park', noiseLevel: 32, amenities: [] },
-            { id: 'cafe003', name: 'The Silent Sip Café', type: 'Café', noiseLevel: 55, amenities: ['wifi'] },
-            { id: 'cowork004', name: 'Zen Desk Co-working', type: 'Co-working', noiseLevel: 40, amenities: ['wifi', 'outlets'] },
-            { id: 'et_lib1', name: 'Abrehot Library', type: 'Library', noiseLevel: 45, amenities: ['wifi', 'outlets'] },
-            { id: 'et_park1', name: 'Sheger Park', type: 'Park', noiseLevel: 35, amenities: [] },
-            { id: 'et_park2', name: 'Entoto Natural Park', type: 'Park', noiseLevel: 30, amenities: [] },
+            { id: 'lib001', name: 'Central City Library, Addis Ababa', type: 'Library', noiseLevel: 45, amenities: ['wifi', 'outlets'], mapQuery: 'Central City Library, Addis Ababa' },
+            { id: 'park002', name: 'Riverside Quiet Zone, Hawassa', type: 'Park', noiseLevel: 32, amenities: [], mapQuery: 'Riverside Quiet Zone, Hawassa' },
+            { id: 'cafe003', name: 'The Silent Sip Café, Gondar', type: 'Café', noiseLevel: 55, amenities: ['wifi'], mapQuery: 'The Silent Sip Cafe, Gondar' },
+            { id: 'cowork004', name: 'Zen Desk Co-working, Mekele', type: 'Co-working', noiseLevel: 40, amenities: ['wifi', 'outlets'], mapQuery: 'Zen Desk Co-working, Mekele' },
+            { id: 'et_lib1', name: 'Abrehot Library, Addis Ababa', type: 'Library', noiseLevel: 45, amenities: ['wifi', 'outlets'], mapQuery: 'Abrehot Library, Addis Ababa' },
+            { id: 'et_park1', name: 'Sheger Park, Addis Ababa', type: 'Park', noiseLevel: 35, amenities: [], mapQuery: 'Sheger Park, Addis Ababa' },
+            { id: 'et_park2', name: 'Entoto Natural Park, Addis Ababa', type: 'Park', noiseLevel: 30, amenities: [], mapQuery: 'Entoto Natural Park, Addis Ababa' },
         ];
         
         // --- Error Boundary Component (Crucial for robust deployment) ---
@@ -166,6 +156,9 @@
             const [user, setUser] = useState(null); 
             const [userId, setUserId] = useState(null);
             const [loading, setLoading] = useState(true);
+            
+            // NEW STATE FOR DEBUGGING
+            const [dbInitError, setDbInitError] = useState(null);
 
             // 2. App State
             const [appData, setAppData] = useState({ bookingId: null, bookingPlace: null, places: [] });
@@ -192,24 +185,39 @@
                 return doc(userDataCollection, USER_DATA_DOCUMENT_ID);
             }, [db, appId]);
 
+            const handleGetDirections = (query) => {
+                const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+                window.open(url, '_blank');
+            };
+
             // --- FIREBASE EFFECTS & LOGIC ---
 
             // Effect 1: Initialize Firebase and Handle Authentication
             useEffect(() => {
                 if (!initializeApp || !getAuth || !getFirestore) {
-                    console.error("Firebase SDK not fully loaded. Check script imports.");
+                    setDbInitError("Firebase SDK not fully loaded. Check script imports.");
                     setLoading(false);
                     return;
                 }
 
                 try {
                     setLogLevel('Debug');
-                    const firebaseApp = initializeApp(firebaseConfig);
+                    
+                    // NEW CHECK: Ensure Firebase config is present and valid
+                    if (Object.keys(parsedFirebaseConfig).length === 0 || !parsedFirebaseConfig.apiKey) {
+                         // Set a specific error if config is bad/missing
+                         throw new Error("FATAL: Firebase configuration is empty, missing API key, or failed JSON parsing.");
+                    }
+                    console.log("Attempting to initialize Firebase with config:", parsedFirebaseConfig);
+
+
+                    const firebaseApp = initializeApp(parsedFirebaseConfig);
                     const firestoreDb = getFirestore(firebaseApp);
                     const firebaseAuth = getAuth(firebaseApp);
 
                     setDb(firestoreDb);
                     setAuth(firebaseAuth);
+                    setDbInitError(null); // Clear any previous error if successful
                     
                     // 1. Check for Redirect Result (Crucial for robust sign-in on deployment)
                     const checkRedirectResult = async () => {
@@ -219,7 +227,6 @@
                                 console.log("Signed in successfully via redirect.");
                             }
                         } catch (error) {
-                            // auth/popup-closed-by-user is common and usually harmless if the user just closed the window
                             if (error.code !== 'auth/popup-closed-by-user') {
                                 console.error("Error during redirect sign-in:", error);
                                 showToast("Sign-In failed after redirect.", 'error');
@@ -242,7 +249,7 @@
                                 }
                             } catch (authError) {
                                 console.warn('Auth Fallback/Anonymous Sign-in Error:', authError);
-                                // Set a random ID for guest data if auth fails entirely
+                                // Fallback: Set a random ID for guest data if auth fails entirely
                                 setUserId(crypto.randomUUID()); 
                             }
                         }
@@ -254,15 +261,24 @@
                     
                     return () => unsubscribe();
                 } catch (initError) {
-                    console.error('Firebase Init Error:', initError);
-                    showToast("Failed to connect to the database.", 'error');
+                    // This catch block handles both Firebase internal errors and our manual 'FATAL' error
+                    const errorMessage = initError.message || initError.toString();
+                    console.error('Firebase Init Error:', errorMessage);
+                    setDbInitError(errorMessage); // Set the specific error message for display
+                    showToast("Failed to connect to the database. (Configuration Error)", 'error');
+                    
+                    // Crucial: If initialization fails, still attempt to load app as a guest
+                    if (!userId) {
+                       setUserId(crypto.randomUUID()); 
+                    }
+                    
                     setLoading(false);
                 }
             }, []);
 
             // Effect 2: Set up Real-time Data Listener for User State
             useEffect(() => {
-                if (!db || !userId) return;
+                if (!db || !userId) return; // Wait for DB to be initialized and UserID to be set
 
                 const docRef = getDocRef(userId);
                 if (!docRef) return;
@@ -286,6 +302,7 @@
                         }
                     }, (snapshotError) => {
                         console.error('Firestore Snapshot Error:', snapshotError);
+                        showToast("Data loading failed. Check security rules.", 'error');
                     });
                 } catch (e) {
                     console.error("Failed to attach snapshot listener:", e);
@@ -296,7 +313,6 @@
 
 
             // --- AUTHENTICATION HANDLERS ---
-
             const handleGoogleSignIn = async () => {
                 if (!auth || !GoogleAuthProvider || !signInWithPopup || !signInWithRedirect) return;
                 const provider = new GoogleAuthProvider();
@@ -338,10 +354,10 @@
             };
 
             // --- APPLICATION LOGIC (Booking, Saving Places, etc.) ---
-
             const handleBooking = async (locationId, locationName) => {
-                if (!userId || !db || !setDoc || user?.isAnonymous) {
-                     showToast("Please sign in or sign up with Google to use the booking feature.", 'warning');
+                // MODIFIED: Removed 'user?.isAnonymous' check. Features are enabled for all users.
+                if (!userId || !db || !setDoc) {
+                     showToast("Cannot connect to database.", 'error');
                      return;
                 }
                 const docRef = getDocRef(userId);
@@ -357,7 +373,8 @@
             };
 
             const handleSavePlace = async () => {
-                if (!db || !userId || !setDoc || user?.isAnonymous) return showToast("Please sign in or sign up with Google to add places.", 'warning');
+                // MODIFIED: Removed 'user?.isAnonymous' check. Features are enabled for all users.
+                if (!db || !userId || !setDoc) return;
                 const placeName = inputPlace.trim();
                 if (!placeName) return;
                 const docRef = getDocRef(userId);
@@ -376,7 +393,8 @@
             };
             
             const handleDeletePlace = async (placeId, placeName) => {
-                if (!db || !userId || !setDoc || user?.isAnonymous) return;
+                // MODIFIED: Removed 'user?.isAnonymous' check. Features are enabled for all users.
+                if (!db || !userId || !setDoc) return;
                 const docRef = getDocRef(userId);
                 if (!docRef) return;
                 try {
@@ -404,7 +422,7 @@
                 return 'bg-red-500'; 
             };
             
-            // --- UI Components and Page Rendering (Unchanged) ---
+            // --- UI Components and Page Rendering ---
             const StatusIndicator = ({ status, className = '' }) => (
                 <span className={`inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium ${className}`}>
                     <svg className="-ml-1 mr-1.5 h-2 w-2" fill="currentColor" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" /></svg>
@@ -472,27 +490,25 @@
                         <h2 className="text-3xl font-extrabold text-gray-800 mb-6">{t.homeTitle}</h2>
                         
                         {/* Booking Status */}
-                        {user && !user.isAnonymous && (
-                            <div className={`p-4 rounded-xl shadow-lg mb-6 ${appData.bookingId ? 'bg-indigo-50 border border-indigo-200' : 'bg-gray-100 border border-gray-200'}`}>
-                                <h3 className="text-xl font-bold text-gray-700 mb-2">{t.bookingStatus}</h3>
-                                {appData.bookingId ? (
-                                    <div className="flex justify-between items-center">
-                                        <p className="text-lg font-semibold text-indigo-600 truncate">{appData.bookingPlace}</p>
-                                        <button 
-                                            onClick={() => handleBooking(null, null)}
-                                            className="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition text-sm shadow-md"
-                                        >
-                                            {t.cancelBooking}
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <p className="text-gray-500">{t.noBooking}</p>
-                                )}
-                            </div>
-                        )}
+                        <div className={`p-4 rounded-xl shadow-lg mb-6 ${appData.bookingId ? 'bg-indigo-50 border border-indigo-200' : 'bg-gray-100 border border-gray-200'}`}>
+                            <h3 className="text-xl font-bold text-gray-700 mb-2">{t.bookingStatus}</h3>
+                            {appData.bookingId ? (
+                                <div className="flex justify-between items-center">
+                                    <p className="text-lg font-semibold text-indigo-600 truncate">{appData.bookingPlace}</p>
+                                    <button 
+                                        onClick={() => handleBooking(null, null)}
+                                        className="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition text-sm shadow-md"
+                                    >
+                                        {t.cancelBooking}
+                                    </button>
+                                </div>
+                            ) : (
+                                <p className="text-gray-500">{t.noBooking}</p>
+                            )}
+                        </div>
                         {user?.isAnonymous && (
-                             <div className="p-4 rounded-xl shadow-lg mb-6 bg-yellow-50 border border-yellow-200">
-                                <p className="text-sm text-yellow-800 font-medium">Please sign in or sign up with Google to manage bookings and favorites.</p>
+                             <div className="p-3 rounded-xl shadow-lg mb-6 bg-yellow-50 border border-yellow-200">
+                                <p className="text-sm text-yellow-800 font-medium">{t.anonymousFeatureWarning}</p>
                             </div>
                         )}
                         
@@ -529,8 +545,8 @@
                         <div className="space-y-4">
                             {filteredLocations.length > 0 ? (
                                 filteredLocations.map(loc => (
-                                    <div key={loc.id} className="bg-white p-4 rounded-xl shadow-lg flex justify-between items-center border-l-4 border-indigo-400 hover:shadow-xl transition">
-                                        <div>
+                                    <div key={loc.id} className="bg-white p-4 rounded-xl shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center border-l-4 border-indigo-400 hover:shadow-xl transition">
+                                        <div className="mb-3 sm:mb-0 sm:w-1/2">
                                             <p className="text-xl font-bold text-gray-800">{loc.name}</p>
                                             <div className="flex items-center space-x-2 text-sm text-gray-500 mt-1">
                                                 <span className={`px-2 py-0.5 rounded-full text-white text-xs font-semibold ${getNoiseColor(loc.noiseLevel)}`}>
@@ -540,22 +556,21 @@
                                             </div>
                                         </div>
                                         
-                                        {user && !user.isAnonymous ? (
+                                        <div className="flex space-x-2 w-full sm:w-auto">
+                                             <button 
+                                                onClick={() => handleGetDirections(loc.mapQuery)}
+                                                className="flex-grow sm:flex-none px-4 py-2 bg-teal-500 text-white font-semibold rounded-lg hover:bg-teal-600 transition text-sm shadow-md"
+                                            >
+                                                {t.directions}
+                                            </button>
                                             <button 
                                                 onClick={() => handleBooking(loc.id, loc.name)}
-                                                disabled={!!appData.bookingId}
-                                                className="px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition disabled:bg-gray-400 disabled:cursor-not-allowed text-sm shadow-md"
+                                                disabled={!!appData.bookingId && appData.bookingId !== loc.id}
+                                                className="flex-grow sm:flex-none px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition disabled:bg-gray-400 disabled:cursor-not-allowed text-sm shadow-md"
                                             >
-                                                {appData.bookingId ? (appData.bookingPlace === loc.name ? "Booked" : t.bookSpot) : t.bookSpot}
+                                                {appData.bookingId === loc.id ? "Booked" : t.bookSpot}
                                             </button>
-                                        ) : (
-                                            <button 
-                                                onClick={handleGoogleSignIn}
-                                                className="px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition text-sm shadow-md"
-                                            >
-                                                {t.signInGoogle}
-                                            </button>
-                                        )}
+                                        </div>
                                     </div>
                                 ))
                             ) : (
@@ -570,41 +585,44 @@
                 <div className="p-4 pb-20">
                     <h2 className="text-3xl font-extrabold text-gray-800 mb-6">{t.placesTracker}</h2>
                     
-                    {/* Add New Place Input */}
-                    {user && !user.isAnonymous ? (
-                        <div className="bg-white shadow-xl rounded-xl p-6 border border-gray-200 mb-8">
-                            <h3 className="text-xl font-medium text-gray-800 mb-4">{t.addPlace}</h3>
-                            <div className="flex flex-col sm:flex-row gap-2">
-                                <input
-                                    type="text"
-                                    className="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500"
-                                    value={inputPlace}
-                                    onChange={(e) => setInputPlace(e.target.value)}
-                                    placeholder={t.enterPlace}
-                                    disabled={loading}
-                                />
-                                <button
-                                    onClick={handleSavePlace}
-                                    disabled={loading || !inputPlace.trim()}
-                                    className="px-6 py-3 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 transition duration-150 disabled:opacity-50"
-                                >
-                                    {t.addPlace}
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="text-center bg-gray-100 p-6 rounded-xl shadow-inner mb-8">
-                            <p className="text-lg font-semibold text-gray-700 mb-4">To save and manage your quiet spots, please **Sign In or Sign Up** using Google. This creates your permanent account.</p>
-                            {user?.isAnonymous && <p className="text-sm text-gray-500 mt-2">You are currently a Guest. Signing in with Google will upgrade this session and link your saved data to your new account.</p>}
+                    {/* Guest Warning */}
+                    {user?.isAnonymous && (
+                        <div className="p-3 rounded-xl shadow-lg mb-6 bg-yellow-50 border border-yellow-200">
+                            <p className="text-sm text-yellow-800 font-medium">{t.anonymousFeatureWarning}</p>
                             <button 
                                 onClick={handleGoogleSignIn}
-                                className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-md mt-4"
+                                className="mt-3 px-4 py-2 bg-yellow-600 text-white font-semibold rounded-lg hover:bg-yellow-700 transition text-sm shadow-md"
                             >
                                 {t.signInGoogle}
                             </button>
                         </div>
                     )}
 
+
+                    {/* Add New Place Input (Available for all users now) */}
+                    <div className="bg-white shadow-xl rounded-xl p-6 border border-gray-200 mb-8">
+                        <h3 className="text-xl font-medium text-gray-800 mb-4">{t.addPlace}</h3>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                                type="text"
+                                className="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500"
+                                value={inputPlace}
+                                onChange={(e) => setInputPlace(e.target.value)}
+                                placeholder={t.enterPlace}
+                                disabled={loading || !!dbInitError}
+                            />
+                            <button
+                                onClick={handleSavePlace}
+                                disabled={loading || !inputPlace.trim() || !!dbInitError}
+                                className="px-6 py-3 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 transition duration-150 disabled:opacity-50"
+                            >
+                                {t.addPlace}
+                            </button>
+                        </div>
+                        {dbInitError && (
+                             <p className="text-red-500 text-sm mt-3">Cannot save data: Database failed to initialize.</p>
+                        )}
+                    </div>
 
                     {/* List Display */}
                     <div className="bg-white shadow-xl rounded-xl p-6 border border-gray-200">
@@ -621,7 +639,7 @@
                                             <button
                                                 onClick={() => handleDeletePlace(place.id, place.name)}
                                                 className="p-1 text-red-500 hover:text-red-700 transition duration-150 rounded-full hover:bg-red-50 disabled:opacity-50"
-                                                disabled={loading || !user || user.isAnonymous}
+                                                disabled={loading || !!dbInitError} // Only disable if loading or DB error
                                                 aria-label={t.delete}
                                             >
                                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
@@ -677,23 +695,39 @@
                     ) : (
                         <div className="text-center bg-white p-8 rounded-xl shadow-xl border border-gray-200">
                             <p className="text-xl font-semibold text-gray-700 mb-4">Sign In or Sign Up to create a permanent account.</p>
-                            {user?.isAnonymous && <p className="text-sm text-gray-500 mb-4">You are currently logged in as a Guest (ID: <span className="font-mono text-gray-600">{userId}</span>). Sign in with Google to upgrade your account and unlock all features.</p>}
+                            {user?.isAnonymous && <p className="text-sm text-gray-500 mb-4">You are currently logged in as a Guest (ID: <span className="font-mono text-gray-600">{userId}</span>). Sign in with Google to upgrade your account and link your saved data.</p>}
                             <button onClick={handleGoogleSignIn} className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-md">
                                 {t.signInGoogle}
                             </button>
                         </div>
                     )}
                     
-                     {/* Connection Status */}
+                     {/* Connection Status & Debugging */}
                      <div className="bg-white shadow-xl rounded-xl p-6 mt-8 border border-gray-200">
-                        <h2 className="text-xl font-semibold text-gray-800 mb-4">Connection Status</h2>
-                        <div className="flex items-center justify-between">
+                        <h2 className="text-xl font-semibold text-gray-800 mb-4">{t.configStatus}</h2>
+                        
+                        <div className="flex items-center justify-between mb-3">
                             <span className="text-gray-600">Database Status:</span>
                             {db ? (
                                 <StatusIndicator status={t.connected} className="bg-green-100 text-green-800" />
                             ) : (
-                                <StatusIndicator status={t.authenticating} className="bg-yellow-100 text-yellow-800" />
+                                <StatusIndicator status={dbInitError ? "FAILED" : t.authenticating} className={dbInitError ? "bg-red-100 text-red-800" : "bg-yellow-100 text-yellow-800"} />
                             )}
+                        </div>
+                        
+                        {dbInitError && (
+                            <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded-lg">
+                                <p className="font-bold text-red-700">{t.dbInitError}:</p>
+                                <pre className="text-sm whitespace-pre-wrap font-mono text-red-600 break-all">{dbInitError}</pre>
+                                <p className="text-xs text-red-500 mt-2">This usually means the required configuration data is missing or malformed.</p>
+                            </div>
+                        )}
+
+                        <div className="border-t pt-3">
+                            <p className="font-bold text-gray-700">{t.configUsed}:</p>
+                            <pre className="text-xs p-2 bg-gray-50 rounded-lg font-mono whitespace-pre-wrap break-all">
+                                {JSON.stringify(parsedFirebaseConfig, null, 2)}
+                            </pre>
                         </div>
                     </div>
                 </div>
