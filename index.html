@@ -1,0 +1,1361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuietSpace: Personalized Noise Map & Finder</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            /* Ensure the body takes up the full viewport height */
+            min-height: 100vh;
+        }
+        .lang-am {
+            font-family: 'Inter', 'Noto Sans Ethiopic', sans-serif;
+        }
+        .noise-indicator {
+            padding: 4px 8px;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 0.8rem;
+            transition: background-color 0.3s;
+        }
+        .filter-chip {
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s;
+        }
+        .filter-chip.active {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+            transform: scale(1.05);
+        }
+        /* Style for the responsive mobile bottom nav */
+        #mobile-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 50;
+        }
+        /* Padding for content to clear the fixed footer nav */
+        #app-container {
+            padding-bottom: 72px; /* Sufficient space for the 56px high mobile nav */
+        }
+        .nav-item.active .nav-icon {
+            color: #4f46e5; /* Indigo 600 */
+        }
+        .nav-item.active .nav-text {
+            color: #4f46e5;
+            font-weight: 600;
+        }
+        /* Custom scrollbar for locations list */
+        #locations-list, #main-content {
+            max-height: calc(100vh - 200px); 
+            overflow-y: auto;
+        }
+        .loader-ring {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+        }
+        .loader-ring:after {
+            content: " ";
+            display: block;
+            width: 16px;
+            height: 16px;
+            margin: 2px;
+            border-radius: 50%;
+            border: 3px solid #60a5fa;
+            border-color: #60a5fa transparent #60a5fa transparent;
+            animation: loader-ring 1.2s linear infinite;
+        }
+        @keyframes loader-ring {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Style for form inputs */
+        .form-input {
+            transition: border-color 0.2s, box-shadow 0.2s;
+            padding: 12px;
+            border: 1px solid #d1d5db; /* gray-300 */
+            border-radius: 0.375rem; /* rounded-md */
+        }
+        .form-input:focus {
+            border-color: #4f46e5; /* indigo-600 */
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); /* focus:ring-indigo-200 */
+            outline: none;
+        }
+    </style>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, getDocs, updateDoc, setLogLevel, query, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL SETUP (MANDATORY) ---
+        setLogLevel('Debug');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'quiet-space-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+        
+        // Expose necessary variables to the global scope for the main script
+        window.firebaseDependencies = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, doc, setDoc, onSnapshot, getDocs, updateDoc, query, deleteDoc, addDoc,
+            // Auth Dependencies
+            GoogleAuthProvider, signInWithPopup, signOut,
+            appId, firebaseConfig, initialAuthToken
+        };
+    </script>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+    
+    <!-- Header - Profile Display and Language Selector -->
+    <header class="bg-indigo-600 shadow-lg p-4 sticky top-0 z-40 flex justify-between items-center">
+        <h1 class="text-3xl font-extrabold text-white tracking-tight">
+            <span data-i18n="app_title_quiet">Quiet</span><span class="font-light" data-i18n="app_title_space">Space</span>
+        </h1>
+        <div class="flex items-center space-x-4">
+            <!-- Language Selector -->
+            <select id="language-switcher" class="bg-indigo-700 text-white text-sm rounded-lg p-2 focus:ring-indigo-300 focus:border-indigo-300">
+                <option value="en">English</option>
+                <option value="fr">Français</option>
+                <option value="am">አማርኛ</option>
+                <option value="nl">Nederlands</option>
+            </select>
+            <!-- Auth Controls -->
+            <div id="auth-controls">
+                <!-- Profile/Sign In/Out buttons rendered here -->
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="flex-grow p-4 md:p-8 max-w-4xl mx-auto w-full" id="app-container">
+        
+        <!-- Loading & Status -->
+        <div id="loading-status" class="text-center py-6">
+            <div class="loader-ring mx-auto mb-2"></div>
+            <p id="auth-status" class="text-sm text-gray-500" data-i18n="status_loading">Connecting to QuietSpace data...</p>
+        </div>
+
+        <!-- Dynamic Content Renders Here -->
+        <div id="main-content" class="pb-4">
+            <!-- The content of the selected page (Home, Map, Explore, etc.) will be rendered here by JS -->
+        </div>
+        
+    </main>
+
+    <!-- Mobile Navigation Bar -->
+    <nav id="mobile-nav" class="bg-white border-t border-gray-200 shadow-2xl md:hidden">
+        <div class="flex justify-around h-14">
+            <a href="#" class="nav-item flex flex-col items-center justify-center p-2 text-gray-500 hover:text-indigo-600 active" data-page="home">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                <span class="text-xs mt-0.5 nav-text" data-i18n="nav_home">Home</span>
+            </a>
+            <a href="#" class="nav-item flex flex-col items-center justify-center p-2 text-gray-500 hover:text-indigo-600" data-page="map">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" x2="9" y1="3" y2="18"/><line x1="15" x2="15" y1="6" y2="21"/></svg>
+                <span class="text-xs mt-0.5 nav-text" data-i18n="nav_map">Map</span>
+            </a>
+            <a href="#" class="nav-item flex flex-col items-center justify-center p-2 text-gray-500 hover:text-indigo-600" data-page="explore">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <span class="text-xs mt-0.5 nav-text" data-i18n="nav_explore">Explore</span>
+            </a>
+            <a href="#" class="nav-item flex flex-col items-center justify-center p-2 text-gray-500 hover:text-indigo-600" data-page="favorites">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 1.07-4.5 2-1.5-1.07-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+                <span class="text-xs mt-0.5 nav-text" data-i18n="nav_favorites">Faves</span>
+            </a>
+            <a href="#" class="nav-item flex flex-col items-center justify-center p-2 text-gray-500 hover:text-indigo-600" data-page="profile">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <span class="text-xs mt-0.5 nav-text" data-i18n="nav_profile">Profile</span>
+            </a>
+        </div>
+    </nav>
+    
+    <!-- Footer/Debug Status -->
+    <footer class="p-3 bg-gray-100 border-t text-xs text-gray-600 text-center hidden md:block">
+        <p>User ID: <span id="current-user-id" class="font-mono text-gray-800">...</span></p>
+        <p class="mt-1">Data powered by <span class="font-bold">Simulated Crowd-Sourcing</span> via Firestore</p>
+    </footer>
+
+    <!-- Main Application Script -->
+    <script type="module">
+        // Destructure Firebase dependencies exposed from the module script
+        const {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, doc, setDoc, onSnapshot, getDocs, updateDoc, query, deleteDoc, addDoc,
+            // Auth Dependencies
+            GoogleAuthProvider, signInWithPopup, signOut,
+            appId, firebaseConfig, initialAuthToken
+        } = window.firebaseDependencies;
+
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+        let locationsData = [];
+        let currentFilters = { type: 'all', wifi: false, outlets: false };
+        let currentBooking = null; 
+        let currentPage = 'home'; // Default page
+
+        
+        // --- INTERNATIONALIZATION (i18n) SETUP ---
+        let currentLang = localStorage.getItem('quietSpaceLang') || 'en';
+
+        const translations = {
+            en: {
+                app_title_quiet: "Quiet", app_title_space: "Space",
+                sign_in: "Sign in", sign_out: "Sign Out", welcome: "Welcome, ",
+                nav_home: "Home", nav_map: "Map", nav_explore: "Explore", nav_favorites: "Faves", nav_profile: "Profile",
+                nav_add_place: "Suggest a Place", nav_report_noise: "Report Noise", nav_submit_review: "Submit Review",
+                my_booking_title: "My Current Booking", spot_reserved: "Spot Reserved:",
+                confirmed_at: "Confirmed at:", cancel_booking: "Cancel Booking",
+                find_spot_title: "Filter Spots", place_type: "Place Type:",
+                all: "All", cafe: "Café", library: "Library", park: "Park", coworking: "Co-working",
+                amenity_wifi: "Wi-Fi", amenity_outlets: "Outlets",
+                nearby_spots: "Nearby Quiet Spots", empty_state: "No spots found matching your filters. Try adjusting them!",
+                noise_prediction: "Quiet Hours Prediction:",
+                wifi_yes: "Wi-Fi: Yes", wifi_no: "Wi-Fi: No", outlets_yes: "Outlets: Yes", outlets_no: "Outlets: No",
+                book_spot: "Book This Spot", already_booked: "Already Booked (Cancel Above)",
+                map_title: "Noise-Level Heatmap", map_placeholder: "Interactive map view showing real-time noise levels across the city.",
+                explore_title: "Browse & Discover", explore_placeholder: "Discover new quiet spots by category, popularity, and smart suggestions.",
+                favorites_title: "Your Favorite Spots", favorites_placeholder: "Your saved quiet spaces will appear here for quick access.",
+                profile_title: "Account & Settings", profile_placeholder_1: "User preferences, booking history, and achievements will be managed here.", profile_placeholder_2: "Sign in for persistent access to Favorites and History.",
+                utility_page_title: (name) => name, utility_page_placeholder: (name) => `Content for the '${name}' utility page.`,
+                status_fail_book: "Failed to book spot. Check console for details.",
+                status_already_booked: "You already have an active booking. Please cancel it first.",
+                status_please_sign_in: "Please sign in to book a spot.",
+                status_booking_success: (name) => `Successfully booked: ${name}!`,
+                status_cancel_success: "Booking successfully cancelled.",
+                status_loading: "Connecting to QuietSpace data...",
+                status_sign_in_prompt: "Sign in for persistent access.",
+                status_data_loaded: "Live data loaded.",
+                // New Form Fields & Messages
+                form_title_add: "Suggest a New Quiet Spot",
+                form_title_review: "Submit a Review",
+                field_name: "Place Name", field_type: "Type of Location", field_desc: "Description & Notes (Quiet hours, best features)",
+                field_amenities: "Amenities Available", field_type_select: "Select a type...",
+                field_rating: "Quietness Rating (1-5)", field_comment: "Your Review Comment",
+                submit_btn: "Submit Suggestion", review_btn: "Submit Review", back_to_home: "Back to Home",
+                status_fail_submit: (type) => `Failed to submit ${type}. Please check console.`,
+                status_success_submit: (type) => `Successfully submitted ${type}! Thank you.`,
+                error_auth_required: "Please sign in to access this feature.",
+                error_required_fields: "Please fill out all required fields.",
+            },
+            fr: {
+                app_title_quiet: "Calme", app_title_space: "Espace",
+                sign_in: "Se connecter", sign_out: "Se déconnecter", welcome: "Bienvenue, ",
+                nav_home: "Accueil", nav_map: "Carte", nav_explore: "Explorer", nav_favorites: "Favoris", nav_profile: "Profil",
+                nav_add_place: "Suggérer un Lieu", nav_report_noise: "Signaler le Bruit", nav_submit_review: "Soumettre un Avis",
+                my_booking_title: "Ma réservation actuelle", spot_reserved: "Place réservée :",
+                confirmed_at: "Confirmée à :", cancel_booking: "Annuler la réservation",
+                find_spot_title: "Filtrer les Lieux", place_type: "Type de lieu :",
+                all: "Tout", cafe: "Café", library: "Bibliothèque", park: "Parc", coworking: "Co-working",
+                amenity_wifi: "Wi-Fi", amenity_outlets: "Prises",
+                nearby_spots: "Lieux calmes à proximité", empty_state: "Aucun lieu trouvé correspondant à vos filtres. Essayez de les ajuster !",
+                noise_prediction: "Prédiction des heures calmes :",
+                wifi_yes: "Wi-Fi : Oui", wifi_no: "Wi-Fi : Non", outlets_yes: "Prises : Oui", outlets_no: "Prises : Non",
+                book_spot: "Réserver cette place", already_booked: "Déjà réservé (Annuler ci-dessus)",
+                map_title: "Carte thermique du bruit", map_placeholder: "Vue cartographique interactive montrant les niveaux de bruit en temps réel dans la ville.",
+                explore_title: "Parcourir & Découvrir", explore_placeholder: "Découvrez de nouveaux lieux calmes par catégorie, popularité et suggestions intelligentes.",
+                favorites_title: "Vos Lieux Favoris", favorites_placeholder: "Vos espaces calmes enregistrés apparaîtront ici pour un accès rapide.",
+                profile_title: "Compte & Paramètres", profile_placeholder_1: "Les préférences utilisateur, l'historique des réservations et les succès seront gérés ici.", profile_placeholder_2: "Connectez-vous pour un accès permanent aux Favoris et à l'Historique.",
+                utility_page_title: (name) => name, utility_page_placeholder: (name) => `Contenu pour la page utilitaire '${name}'.`,
+                status_fail_book: "Échec de la réservation. Vérifiez la console.",
+                status_already_booked: "Vous avez déjà une réservation active. Veuillez l'annuler d'abord.",
+                status_please_sign_in: "Veuillez vous connecter pour réserver.",
+                status_booking_success: (name) => `Réservation réussie : ${name} !`,
+                status_cancel_success: "Réservation annulée avec succès.",
+                status_loading: "Connexion aux données QuietSpace...",
+                status_sign_in_prompt: "Connectez-vous pour un accès permanent.",
+                status_data_loaded: "Données en direct chargées.",
+                 // New Form Fields & Messages
+                form_title_add: "Suggérer un Nouveau Lieu Calme",
+                form_title_review: "Soumettre un Avis",
+                field_name: "Nom du Lieu", field_type: "Type de Lieu", field_desc: "Description & Notes (Heures calmes, meilleures caractéristiques)",
+                field_amenities: "Commodités Disponibles", field_type_select: "Sélectionner un type...",
+                field_rating: "Note de Calme (1-5)", field_comment: "Votre Commentaire d'Avis",
+                submit_btn: "Soumettre la Suggestion", review_btn: "Soumettre l'Avis", back_to_home: "Retour à l'Accueil",
+                status_fail_submit: (type) => `Échec de la soumission de ${type}. Vérifiez la console.`,
+                status_success_submit: (type) => `Soumission de ${type} réussie ! Merci.`,
+                error_auth_required: "Veuillez vous connecter pour accéder à cette fonctionnalité.",
+                error_required_fields: "Veuillez remplir tous les champs obligatoires.",
+            },
+            am: {
+                app_title_quiet: "ጸጥታ", app_title_space: "ቦታ", // Ts'et't'a Bota
+                sign_in: "ይግቡ", sign_out: "ይውጡ", welcome: "እንኳን ደህና መጡ, ", // Yigbu, Yiwut'u, Enkuwan dehna met'u
+                nav_home: "መነሻ", nav_map: "ካርታ", nav_explore: "ይፈልጉ", nav_favorites: "ተወዳጆች", nav_profile: "መገለጫ",
+                nav_add_place: "ቦታ ይጠቁሙ", nav_report_noise: "ድምፅ ሪፖርት ያድርጉ", nav_submit_review: "ግምገማ አስገባ",
+                my_booking_title: "የአሁኑ ቦታ ማስያዝዎ", spot_reserved: "የተያዘ ቦታ:",
+                confirmed_at: "የተረጋገጠበት ጊዜ:", cancel_booking: "ቦታ ማስያዝ ይሰርዙ",
+                find_spot_title: "ቦታዎችን ያጣሩ", place_type: "የቦታ አይነት:",
+                all: "ሁሉም", cafe: "ካፌ", library: "ቤተ-መጽሐፍት", park: "ፓርክ", coworking: "አብሮ መስሪያ ቦታ",
+                amenity_wifi: "ዋይ ፋይ", amenity_outlets: "መውጫ",
+                nearby_spots: "በአቅራቢያ ያሉ ጸጥ ያሉ ቦታዎች", empty_state: "የማጣሪያ መስፈርቶችዎን የሚያሟላ ቦታ አልተገኘም። እባክዎ ያስተካክሉ!",
+                noise_prediction: "የጸጥታ ሰዓታት ትንበያ:",
+                wifi_yes: "ዋይ ፋይ: አዎ", wifi_no: "ዋይ ፋይ: የለም", outlets_yes: "መውጫ: አዎ", outlets_no: "መውጫ: የለም",
+                book_spot: "ቦታውን ያስይዙ", already_booked: "ቀድሞ ተይዟል (ከላይ ይሰርዙ)",
+                map_title: "የድምጽ ደረጃ ካርታ", map_placeholder: "በከተማው ዙሪያ ያለውን የድምጽ መጠን በእውነተኛ ጊዜ የሚያሳይ ካርታ።",
+                explore_title: "ይፈልጉ እና ያግኙ", explore_placeholder: "በምድብ፣ ተወዳጅነት እና ብልጥ ጥቆማዎች አዳዲስ ጸጥ ያሉ ቦታዎችን ያግኙ።",
+                favorites_title: "የእርስዎ ተወዳጅ ቦታዎች", favorites_placeholder: "ለፈጣን መዳረሻ የተቀመጡ ጸጥ ያሉ ቦታዎችዎ እዚህ ይታያሉ።",
+                profile_title: "መለያ እና ቅንብሮች", profile_placeholder_1: "የተጠቃሚ ምርጫዎች፣ ቦታ ማስያዝ ታሪክ እና ስኬቶች እዚህ ይተዳደራሉ።", profile_placeholder_2: "ተወዳጆች እና ታሪክን ለቋሚ መዳረሻ ይግቡ።",
+                utility_page_title: (name) => name, utility_page_placeholder: (name) => `'${name}' የተግባር ገጽ ይዘት።`,
+                status_fail_book: "ቦታ ማስያዝ አልተሳካም። ኮንሶል ያረጋግጡ።",
+                status_already_booked: "እርስዎ አስቀድመው ቦታ አስይዘዋል። እባክዎ መጀመሪያ ይሰርዙ።",
+                status_please_sign_in: "ቦታ ለማስያዝ እባክዎ ይግቡ።",
+                status_booking_success: (name) => `${name} በተሳካ ሁኔታ ተይዟል!`,
+                status_cancel_success: "ቦታ ማስያዝ በተሳካ ሁኔታ ተሰርዟል።",
+                status_loading: "ወደ QuietSpace ዳታ በመገናኘት ላይ...",
+                status_sign_in_prompt: "ለቋሚ መዳረሻ ይግቡ።",
+                status_data_loaded: "ቀጥታ ዳታ ተጭኗል።",
+                // New Form Fields & Messages
+                form_title_add: "አዲስ ጸጥ ያለ ቦታ ይጠቁሙ",
+                form_title_review: "ግምገማ ያስገቡ",
+                field_name: "የቦታው ስም", field_type: "የአይነት ቦታ", field_desc: "መግለጫ እና ማስታወሻዎች (ጸጥታ ሰዓታት፣ ምርጥ ባህሪያት)",
+                field_amenities: "ያሉ አገልግሎቶች", field_type_select: "አይነት ይምረጡ...",
+                field_rating: "የጸጥታ ደረጃ (1-5)", field_comment: "የእርስዎ ግምገማ አስተያየት",
+                submit_btn: "ጥቆማ አስገባ", review_btn: "ግምገማ አስገባ", back_to_home: "ወደ መነሻ ተመለስ",
+                status_fail_submit: (type) => `${type} ለማስገባት አልተሳካም። ኮንሶል ያረጋግጡ።`,
+                status_success_submit: (type) => `${type} በተሳካ ሁኔታ ገብቷል! እናመሰግናለን።`,
+                error_auth_required: "ይህን ባህሪ ለመጠቀም እባክዎ ይግቡ።",
+                error_required_fields: "እባክዎ ሁሉንም አስፈላጊ መስኮች ይሙሉ",
+            },
+            nl: {
+                app_title_quiet: "Rustige", app_title_space: "Plek",
+                sign_in: "Inloggen", sign_out: "Uitloggen", welcome: "Welkom, ",
+                nav_home: "Home", nav_map: "Kaart", nav_explore: "Ontdekken", nav_favorites: "Favorieten", nav_profile: "Profiel",
+                nav_add_place: "Plek Voorstellen", nav_report_noise: "Meld Geluid", nav_submit_review: "Review Indienen",
+                my_booking_title: "Mijn Huidige Reservering", spot_reserved: "Gereserveerde plek:",
+                confirmed_at: "Bevestigd om:", cancel_booking: "Reservering Annuleren",
+                find_spot_title: "Filter Plekken", place_type: "Plektype:",
+                all: "Alle", cafe: "Café", library: "Bibliotheek", park: "Park", coworking: "Co-working",
+                amenity_wifi: "Wi-Fi: Ja", amenity_outlets: "Stopcontacten",
+                nearby_spots: "Rustige Plekken in de Buurt", empty_state: "Geen plekken gevonden die overeenkomen met je filters. Probeer ze aan te passen!",
+                noise_prediction: "Voorspelling Stille Uren:",
+                wifi_yes: "Wi-Fi: Ja", wifi_no: "Wi-Fi: Nee", outlets_yes: "Stopcontacten: Ja", outlets_no: "Stopcontacten: Nee",
+                book_spot: "Deze Plek Reserveren", already_booked: "Reeds Gereserveerd (Annuleer hierboven)",
+                map_title: "Geluidsniveau Hittekaart", map_placeholder: "Interactieve kaartweergave met realtime geluidsniveaus in de stad.",
+                explore_title: "Bladeren & Ontdekken", explore_placeholder: "Ontdek nieuwe rustige plekken op categorie, populariteit en slimme suggesties.",
+                favorites_title: "Jouw Favoriete Plekken", favorites_placeholder: "Je opgeslagen rustige plekken verschijnen hier voor snelle toegang.",
+                profile_title: "Account & Instellingen", profile_placeholder_1: "Gebruikersvoorkeuren, reserveringsgeschiedenis en prestaties worden hier beheerd.",
+                profile_placeholder_2: "Log in voor permanente toegang tot Favorieten en Geschiedenis.",
+                utility_page_title: (name) => name, utility_page_placeholder: (name) => `Inhoud voor de '${name}' hulppagina.`,
+                status_fail_book: "Reserveren mislukt. Controleer de console.",
+                status_already_booked: "Je hebt al een actieve reservering. Annuleer deze eerst.",
+                status_please_sign_in: "Gelieve in te loggen om een plek te reserveren.",
+                status_booking_success: (name) => `Succesvol gereserveerd: ${name}!`,
+                status_cancel_success: "Reservering succesvol geannuleerd.",
+                status_loading: "Verbinding maken met QuietSpace data...",
+                status_sign_in_prompt: "Log in voor permanente toegang.",
+                status_data_loaded: "Live data geladen.",
+                 // New Form Fields & Messages
+                form_title_add: "Stel een Nieuwe Rustige Plek Voor",
+                form_title_review: "Dien een Beoordeling In",
+                field_name: "Naam van de Plek", field_type: "Type Locatie", field_desc: "Beschrijving & Notities (Stille uren, beste kenmerken)",
+                field_amenities: "Voorzieningen Beschikbaar", field_type_select: "Selecteer een type...",
+                field_rating: "Rust Beoordeling (1-5)", field_comment: "Uw Review Opmerking",
+                submit_btn: "Suggestie Indienen", review_btn: "Review Indienen", back_to_home: "Terug naar Home",
+                status_fail_submit: (type) => `Indienen van ${type} is mislukt. Controleer de console.`,
+                status_success_submit: (type) => `Succesvol ingediend ${type}! Dank u.`,
+                error_auth_required: "Gelieve in te loggen om deze functie te gebruiken.",
+                error_required_fields: "Gelieve alle verplichte velden in te vullen.",
+            },
+        };
+
+        /**
+         * Translation function.
+         * @param {string} key - The translation key.
+         * @param {any[]} args - Arguments for function-based translations.
+         * @returns {string} The translated string.
+         */
+        const t = (key, ...args) => {
+            const langDict = translations[currentLang] || translations.en;
+            let value = langDict[key] || translations.en[key] || key;
+            
+            // Handle function-based translations (like success messages)
+            if (typeof value === 'function') {
+                value = value(...args);
+            }
+            return value;
+        };
+
+        /**
+         * Applies the current language to all elements with data-i18n attributes.
+         */
+        function applyTranslations() {
+            document.body.classList.remove('lang-am');
+            if (currentLang === 'am') {
+                document.body.classList.add('lang-am');
+            }
+
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (key) {
+                    el.textContent = t(key);
+                }
+            });
+
+            // Re-render components that rely on dynamic translation
+            updateAuthUI(auth.currentUser);
+            if (currentPage === 'home') {
+                 renderHomePage();
+            } else if (currentPage === 'favorites') {
+                renderFavoritesPage(); // This ensures placeholders are re-translated
+            } else if (currentPage === 'profile') {
+                renderProfilePage(); // This ensures placeholders are re-translated
+            } else {
+                // Re-render generic page to update titles/placeholders
+                renderPage(currentPage);
+            }
+
+            // Update status text
+            // (Status update logic preserved but moved to initializeAppAndFirebase for consistency)
+        }
+        // --- END i18n SETUP ---
+
+
+        const STATUS_EL = document.getElementById('auth-status');
+        const USER_ID_EL = document.getElementById('current-user-id');
+        const MAIN_CONTENT_EL = document.getElementById('main-content');
+        const AUTH_CONTROLS_EL = document.getElementById('auth-controls');
+        const LANG_SWITCHER_EL = document.getElementById('language-switcher');
+        const MOBILE_NAV_EL = document.getElementById('mobile-nav');
+
+        const PUBLIC_COLLECTION_PATH = `artifacts/${appId}/public/data/quiet_spaces`;
+        const SUGGESTED_PLACES_PATH = `artifacts/${appId}/public/data/suggested_places`;
+        const REVIEWS_PATH = `artifacts/${appId}/public/data/reviews`;
+        const USER_BOOKINGS_PATH = () => `artifacts/${appId}/users/${userId}/bookings`;
+        const ACTIVE_BOOKING_DOC_ID = 'active_booking'; 
+
+        // --- Utility function to show Toast messages (since alert() is forbidden) ---
+        function showToast(message, type = 'info') {
+            const toastContainer = document.getElementById('toast-container');
+            
+            const color = type === 'success' ? 'bg-green-500' : type === 'error' ? 'bg-red-500' : 'bg-indigo-500';
+            const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+
+            const toast = document.createElement('div');
+            toast.className = `${color} text-white p-3 rounded-lg shadow-xl flex items-center space-x-2 transition-all duration-300 opacity-0 transform translate-x-10`;
+            toast.innerHTML = `
+                <span class="text-xl">${icon}</span>
+                <p class="text-sm font-semibold">${message}</p>
+            `;
+            
+            toastContainer.prepend(toast);
+
+            // Show animation
+            setTimeout(() => {
+                toast.classList.remove('opacity-0', 'translate-x-10');
+                toast.classList.add('opacity-100', 'translate-x-0');
+            }, 10);
+
+            // Hide animation and removal
+            setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-x-0');
+                toast.classList.add('opacity-0', 'translate-x-10');
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+        }
+
+        // --- Core UI & Navigation Functions ---
+
+        /**
+         * Switches the application view based on the provided page name.
+         * @param {string} page - The name of the page to render.
+         * @param {string|null} utilityTarget - Optional specific target for utility pages (e.g., 'Place Details').
+         */
+        function renderPage(page, utilityTarget = null) {
+            currentPage = page;
+            MAIN_CONTENT_EL.innerHTML = '';
+            
+            // Update mobile nav visual state
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            const activeNav = document.querySelector(`.nav-item[data-page="${page}"]`);
+            if (activeNav) {
+                activeNav.classList.add('active');
+            }
+
+            // Route the page content
+            switch (page) {
+                case 'home':
+                    renderHomePage();
+                    break;
+                case 'map':
+                    renderGenericPage(t('map_title'), t('map_placeholder'));
+                    break;
+                case 'explore':
+                    renderGenericPage(t('explore_title'), t('explore_placeholder'));
+                    break;
+                case 'favorites':
+                    renderFavoritesPage();
+                    break;
+                case 'profile':
+                    renderProfilePage();
+                    break;
+                case 'utility':
+                    renderUtilityPage(utilityTarget);
+                    break;
+                default:
+                    renderHomePage();
+            }
+
+             // Ensure filters are correctly applied after rendering the home page
+            if (page === 'home') {
+                 setupHomeFilters();
+            }
+        }
+
+        /**
+         * Renders the default Home page with filters, current booking, and location list.
+         */
+        function renderHomePage() {
+            const isAuth = userId && userId !== 'Unauthenticated';
+            MAIN_CONTENT_EL.innerHTML = `
+                <!-- Current Booking Status -->
+                <section id="booking-status-section" class="mb-6 bg-indigo-50 p-4 rounded-xl shadow-inner ${currentBooking ? '' : 'hidden'}">
+                    <h2 class="text-lg font-semibold text-indigo-800 mb-2" data-i18n="my_booking_title">${t('my_booking_title')}</h2>
+                    <div id="current-booking-display">
+                        <!-- Booking details will be rendered here -->
+                    </div>
+                </section>
+
+                <!-- Filter Controls -->
+                <section id="filter-section" class="mb-6 bg-white p-4 rounded-xl shadow-md ${isAuth ? '' : 'hidden'}">
+                    <h2 class="text-lg font-semibold text-gray-700 mb-3" data-i18n="find_spot_title">${t('find_spot_title')}</h2>
+                    
+                    <div class="flex flex-wrap gap-2 mb-4">
+                        <span class="text-sm font-medium text-gray-500 w-full mb-1" data-i18n="place_type">${t('place_type')}</span>
+                        <button data-filter="type" data-value="all" class="filter-chip text-white text-xs px-3 py-1 rounded-full ${currentFilters.type === 'all' ? 'active bg-indigo-500' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" data-i18n="all">${t('all')}</button>
+                        <button data-filter="type" data-value="cafe" class="filter-chip text-xs px-3 py-1 rounded-full ${currentFilters.type === 'cafe' ? 'active bg-indigo-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" data-i18n="cafe">${t('cafe')}</button>
+                        <button data-filter="type" data-value="library" class="filter-chip text-xs px-3 py-1 rounded-full ${currentFilters.type === 'library' ? 'active bg-indigo-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" data-i18n="library">${t('library')}</button>
+                        <button data-filter="type" data-value="park" class="filter-chip text-xs px-3 py-1 rounded-full ${currentFilters.type === 'park' ? 'active bg-indigo-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" data-i18n="park">${t('park')}</button>
+                        <button data-filter="type" data-value="coworking" class="filter-chip text-xs px-3 py-1 rounded-full ${currentFilters.type === 'coworking' ? 'active bg-indigo-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" data-i18n="coworking">${t('coworking')}</button>
+                    </div>
+
+                    <div class="flex flex-wrap gap-4 border-t pt-3">
+                        <label class="flex items-center space-x-2 text-sm text-gray-700">
+                            <input type="checkbox" data-filter="amenity" data-value="wifi" id="filter-wifi" class="rounded text-indigo-600 focus:ring-indigo-500" ${currentFilters.wifi ? 'checked' : ''}>
+                            <span><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inline-block"><path d="M12 20.94V10"/><path d="M21 16c-3.13 2.05-6.88 2.05-10 0"/><path d="M6 10c-1.74 2.1-2.43 5.48-2.6 7"/><path d="M20 17c-1.74-2.1-2.43-5.48-2.6-7"/></svg> <span data-i18n="amenity_wifi">${t('amenity_wifi')}</span></span>
+                        </label>
+                        <label class="flex items-center space-x-2 text-sm text-gray-700">
+                            <input type="checkbox" data-filter="amenity" data-value="outlets" id="filter-outlets" class="rounded text-indigo-600 focus:ring-indigo-500" ${currentFilters.outlets ? 'checked' : ''}>
+                            <span><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inline-block"><rect width="8" height="10" x="8" y="2" rx="1"/><path d="M12 17v5"/><path d="M10 22h4"/></svg> <span data-i18n="amenity_outlets">${t('amenity_outlets')}</span></span>
+                        </label>
+                    </div>
+                </section>
+
+                <!-- Utility Buttons -->
+                <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 mb-6 ${isAuth ? '' : 'hidden'}">
+                    <button class="flex-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-semibold py-2 px-4 rounded-lg transition-colors shadow-sm" onclick="renderPage('utility', 'Add a Place')" data-i18n="nav_add_place">${t('nav_add_place')}</button>
+                    <button class="flex-1 bg-gray-100 text-gray-700 hover:bg-gray-200 font-semibold py-2 px-4 rounded-lg transition-colors shadow-sm" onclick="renderPage('utility', 'Submit Review')" data-i18n="nav_submit_review">${t('nav_submit_review')}</button>
+                    <button class="flex-1 bg-gray-100 text-gray-700 hover:bg-gray-200 font-semibold py-2 px-4 rounded-lg transition-colors shadow-sm" onclick="renderPage('utility', 'Noise Report')" data-i18n="nav_report_noise">${t('nav_report_noise')}</button>
+                </div>
+
+                <!-- Locations List/Map View -->
+                <section class="mt-4">
+                    <h2 class="text-xl font-bold text-gray-800 mb-3" data-i18n="nearby_spots">${t('nearby_spots')}</h2>
+                    <div id="locations-list" class="space-y-3">
+                        <!-- Location cards will be dynamically inserted here -->
+                    </div>
+                    <div id="empty-state" class="hidden text-center p-8 bg-white rounded-xl shadow-md mt-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-indigo-400 mx-auto mb-3"><path d="M19 14V5H5v9"/><path d="M21 19H3"/><path d="M13 14h-2"/><path d="M12 14v5"/></svg>
+                        <p class="text-gray-500" data-i18n="empty_state">${t('empty_state')}</p>
+                    </div>
+                </section>
+            `;
+            // Re-run booking status and location list rendering
+            renderBookingStatus();
+            renderLocations();
+        }
+
+        /**
+         * Renders a generic page with a title and placeholder content.
+         */
+        function renderGenericPage(title, placeholder) {
+            MAIN_CONTENT_EL.innerHTML = `
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-indigo-500">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">${title}</h2>
+                    <p class="text-gray-600">${placeholder}</p>
+                    <div class="mt-6 p-4 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                         <p class="font-semibold text-gray-700">Feature Status:</p>
+                         <ul class="list-disc list-inside text-sm text-gray-500 mt-2">
+                            <li><span class="font-mono">${title}</span> is a future feature requiring integration with a mapping service (e.g., Google Maps API).</li>
+                            <li>Currently, this is a conceptual placeholder.</li>
+                         </ul>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renders the Favorites page.
+         */
+        function renderFavoritesPage() {
+             const isAuth = userId && userId !== 'Unauthenticated';
+             const placeholder = isAuth ? t('favorites_placeholder') : t('profile_placeholder_2');
+             MAIN_CONTENT_EL.innerHTML = `
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-indigo-500">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">${t('favorites_title')}</h2>
+                    <p class="text-gray-600">${placeholder}</p>
+                    ${!isAuth ? `
+                        <p class="mt-4 text-sm text-red-500 font-medium">Favorites require a signed-in user.</p>
+                    ` : `
+                         <ul class="list-disc list-inside text-sm text-gray-700 mt-4">
+                            <li>Central City Library</li>
+                            <li>The Quiet Bean Coffee</li>
+                         </ul>
+                    `}
+                </div>
+            `;
+        }
+
+        /**
+         * Renders the Profile page with sign-out option.
+         */
+        function renderProfilePage() {
+            const isAuth = userId && userId !== 'Unauthenticated';
+            const user = auth.currentUser;
+            const displayName = user?.displayName || user?.email || 'Guest User';
+
+             MAIN_CONTENT_EL.innerHTML = `
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-indigo-500">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">${t('profile_title')}</h2>
+                    ${isAuth ? `
+                        <div class="mb-4 p-4 bg-indigo-50 rounded-lg">
+                            <p class="font-semibold text-indigo-700">${t('welcome')}${displayName}</p>
+                            <p class="text-sm text-indigo-500 truncate">${user.email || 'Anonymous Session'}</p>
+                        </div>
+                        <p class="text-gray-600 mb-4">${t('profile_placeholder_1')}</p>
+                        <button id="sign-out-btn-profile" class="w-full bg-red-500 text-white font-semibold py-2 rounded-lg hover:bg-red-600 transition-colors shadow-md">
+                            ${t('sign_out')}
+                        </button>
+                    ` : `
+                         <p class="text-gray-600 mb-4">${t('profile_placeholder_2')}</p>
+                         <button id="google-sign-in-btn-profile" class="w-full bg-indigo-600 text-white font-semibold py-2 rounded-lg hover:bg-indigo-700 transition-colors shadow-md">
+                            ${t('sign_in')}
+                        </button>
+                    `}
+                </div>
+            `;
+            if (isAuth) {
+                document.getElementById('sign-out-btn-profile').addEventListener('click', signOutUser);
+            } else {
+                 document.getElementById('google-sign-in-btn-profile').addEventListener('click', signInWithGoogle);
+            }
+        }
+
+        /**
+         * Renders a Utility Page (Add a Place, Noise Report, etc.).
+         * @param {string} target - The utility page name.
+         */
+        function renderUtilityPage(target) {
+            const isAuth = userId && userId !== 'Unauthenticated';
+            MAIN_CONTENT_EL.innerHTML = '';
+            
+            if (!isAuth && target !== 'Place Details' && target !== 'Search') {
+                 MAIN_CONTENT_EL.innerHTML = `
+                    <div class="bg-red-100 p-6 rounded-xl shadow-lg border-t-4 border-red-500">
+                        <h2 class="text-2xl font-bold text-red-800 mb-4">${t('error_auth_required')}</h2>
+                        <p class="text-red-700">${t('error_auth_required')}</p>
+                        <button class="mt-4 bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors" onclick="renderPage('profile')">
+                            ${t('sign_in')}
+                        </button>
+                    </div>
+                 `;
+                 return;
+            }
+
+            let contentHTML = '';
+            const title = t('utility_page_title', target);
+
+            if (target === 'Add a Place') {
+                contentHTML = `
+                    <form id="add-place-form" class="space-y-4">
+                        <input type="hidden" name="placeId" value="new">
+                        
+                        <!-- Place Name -->
+                        <div>
+                            <label for="placeName" class="block text-sm font-medium text-gray-700">${t('field_name')} <span class="text-red-500">*</span></label>
+                            <input type="text" id="placeName" name="placeName" required class="mt-1 block w-full form-input" placeholder="e.g., Downtown Library Annex">
+                        </div>
+
+                        <!-- Place Type -->
+                        <div>
+                            <label for="placeType" class="block text-sm font-medium text-gray-700">${t('field_type')} <span class="text-red-500">*</span></label>
+                            <select id="placeType" name="placeType" required class="mt-1 block w-full form-input">
+                                <option value="select" disabled selected>${t('field_type_select')}</option>
+                                <option value="cafe">${t('cafe')}</option>
+                                <option value="library">${t('library')}</option>
+                                <option value="park">${t('park')}</option>
+                                <option value="coworking">${t('coworking')}</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+
+                        <!-- Amenities -->
+                        <div class="pt-2">
+                             <span class="block text-sm font-medium text-gray-700 mb-2">${t('field_amenities')}</span>
+                            <div class="flex space-x-6">
+                                <label class="flex items-center text-sm text-gray-700">
+                                    <input type="checkbox" id="amenityWifi" name="amenityWifi" class="rounded text-indigo-600 focus:ring-indigo-500">
+                                    <span class="ml-2">${t('amenity_wifi')}</span>
+                                </label>
+                                <label class="flex items-center text-sm text-gray-700">
+                                    <input type="checkbox" id="amenityOutlets" name="amenityOutlets" class="rounded text-indigo-600 focus:ring-indigo-500">
+                                    <span class="ml-2">${t('amenity_outlets')}</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Description -->
+                        <div>
+                            <label for="placeDescription" class="block text-sm font-medium text-gray-700">${t('field_desc')} <span class="text-red-500">*</span></label>
+                            <textarea id="placeDescription" name="placeDescription" rows="4" required class="mt-1 block w-full form-input" placeholder="Describe the environment, best times to visit, and quietness level."></textarea>
+                        </div>
+
+                        <button type="submit" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-colors shadow-lg">${t('submit_btn')}</button>
+                    </form>
+                `;
+            } else if (target === 'Submit Review') {
+                // For demonstration, we assume the user is reviewing the first seeded location.
+                const placeToReview = locationsData.find(loc => loc.id === 'lib001') || { id: 'mock', name: 'A Quiet Spot' };
+
+                contentHTML = `
+                    <form id="submit-review-form" class="space-y-4">
+                         <h3 class="text-xl font-semibold text-gray-800 mb-4">Reviewing: ${placeToReview.name}</h3>
+                         <input type="hidden" id="placeId" name="placeId" value="${placeToReview.id}">
+
+                        <!-- Rating -->
+                        <div>
+                            <label for="reviewRating" class="block text-sm font-medium text-gray-700">${t('field_rating')} <span class="text-red-500">*</span></label>
+                            <select id="reviewRating" name="reviewRating" required class="mt-1 block w-full form-input">
+                                <option value="" disabled selected>Select rating...</option>
+                                <option value="5">5 - Extremely Quiet</option>
+                                <option value="4">4 - Very Quiet</option>
+                                <option value="3">3 - Moderately Quiet</option>
+                                <option value="2">2 - A Bit Noisy</option>
+                                <option value="1">1 - Very Noisy</option>
+                            </select>
+                        </div>
+
+                        <!-- Comment -->
+                        <div>
+                            <label for="reviewComment" class="block text-sm font-medium text-gray-700">${t('field_comment')} <span class="text-red-500">*</span></label>
+                            <textarea id="reviewComment" name="reviewComment" rows="4" required class="mt-1 block w-full form-input" placeholder="Share your experience about the noise level and environment."></textarea>
+                        </div>
+
+                        <button type="submit" class="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-colors shadow-lg">${t('review_btn')}</button>
+                    </form>
+                `;
+            } else if (target === 'Noise Report') {
+                 // Existing Noise Report placeholder
+                 contentHTML = `
+                    <p class="text-gray-600">${t('utility_page_placeholder', target)}</p>
+                    <div class="mt-6 p-4 bg-red-100 rounded-lg border border-dashed border-red-300">
+                         <p class="font-semibold text-red-800">Microphone Access Required</p>
+                         <p class="text-sm text-red-700 mt-2">The Noise Report feature requires user permission to access the device's microphone to measure ambient sound levels (dB) and submit real-time data.</p>
+                    </div>
+                `;
+            } else if (target === 'Place Details' || target === 'Search') {
+                 // Placeholder for Place Details or Search
+                 contentHTML = `
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4">${target} Functionality</h3>
+                    <p class="text-gray-600">This view would show comprehensive information or search results. For 'Place Details', it would pull all data (noise history, reviews, amenities) for a single location.</p>
+                    <div class="mt-6 p-4 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                        <p class="font-semibold text-gray-700">Implementation Note:</p>
+                        <p class="text-sm text-gray-500 mt-2">To navigate to 'Place Details', a location ID would normally be passed. This is currently a mock up.</p>
+                    </div>
+                `;
+            }
+
+
+            MAIN_CONTENT_EL.innerHTML = `
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-indigo-500">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-6">${title}</h2>
+                    ${contentHTML}
+                </div>
+                <button class="mt-4 bg-gray-200 text-gray-700 hover:bg-gray-300 font-semibold py-2 px-4 rounded-lg transition-colors shadow-sm" onclick="renderPage('home')">
+                    &larr; ${t('back_to_home')}
+                </button>
+            `;
+            
+            // Attach listeners after HTML is rendered
+            if (target === 'Add a Place') {
+                document.getElementById('add-place-form')?.addEventListener('submit', submitNewPlace);
+            } else if (target === 'Submit Review') {
+                 document.getElementById('submit-review-form')?.addEventListener('submit', submitReview);
+            }
+        }
+
+
+        // --- Booking Functions (Unchanged) ---
+        function renderBookingStatus() {
+            const BOOKING_SECTION_EL = document.getElementById('booking-status-section');
+            const BOOKING_DISPLAY_EL = document.getElementById('current-booking-display');
+            
+            if (!BOOKING_SECTION_EL || !BOOKING_DISPLAY_EL) return; // Not on home page
+
+            BOOKING_DISPLAY_EL.innerHTML = '';
+            
+            if (currentBooking) {
+                BOOKING_SECTION_EL.classList.remove('hidden');
+                
+                const bookedTime = new Date(currentBooking.bookedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                BOOKING_DISPLAY_EL.innerHTML = `
+                    <div class="flex flex-col md:flex-row md:items-center justify-between bg-white p-3 rounded-lg shadow border border-indigo-200">
+                        <div>
+                            <p class="text-base font-bold text-indigo-700">${t('spot_reserved')} ${currentBooking.locationName}</p>
+                            <p class="text-xs text-gray-500 mt-1">${t('confirmed_at')} ${bookedTime}</p>
+                        </div>
+                        <button id="cancel-booking-btn" class="mt-2 md:mt-0 md:ml-4 bg-red-500 text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-red-600 transition-colors shadow-md">
+                            ${t('cancel_booking')}
+                        </button>
+                    </div>
+                `;
+                document.getElementById('cancel-booking-btn').addEventListener('click', cancelBooking);
+
+            } else {
+                BOOKING_SECTION_EL.classList.add('hidden');
+            }
+            renderLocations(); 
+        }
+
+        function setupUserBookingsListener() {
+            if (!db || !userId || userId === 'Unauthenticated') return;
+
+            const bookingRef = doc(db, USER_BOOKINGS_PATH(), ACTIVE_BOOKING_DOC_ID);
+
+            onSnapshot(bookingRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    currentBooking = docSnap.data();
+                    console.log("Active booking loaded:", currentBooking);
+                } else {
+                    currentBooking = null;
+                    console.log("No active booking found.");
+                }
+                renderBookingStatus();
+            }, (error) => {
+                console.error("User Bookings Listener Error:", error);
+            });
+        }
+
+        async function bookLocation(locationId, locationName) {
+            if (!userId || userId === 'Unauthenticated') {
+                showToast(t('status_please_sign_in'), 'error');
+                return;
+            }
+            if (currentBooking) {
+                showToast(t('status_already_booked'), 'error');
+                return;
+            }
+            
+            const bookingRef = doc(db, USER_BOOKINGS_PATH(), ACTIVE_BOOKING_DOC_ID); 
+
+            try {
+                await setDoc(bookingRef, {
+                    locationId: locationId,
+                    locationName: locationName,
+                    bookedAt: new Date().toISOString(),
+                    userId: userId,
+                });
+                showToast(t('status_booking_success', locationName), 'success');
+            } catch (e) {
+                console.error("Error booking spot:", e);
+                showToast(t('status_fail_book'), 'error');
+            }
+        }
+
+        async function cancelBooking() {
+            if (!userId || userId === 'Unauthenticated' || !currentBooking) return;
+
+            const bookingRef = doc(db, USER_BOOKINGS_PATH(), ACTIVE_BOOKING_DOC_ID);
+            
+            try {
+                await deleteDoc(bookingRef);
+                showToast(t('status_cancel_success'), 'success');
+            } catch (e) {
+                console.error("Error cancelling booking:", e);
+                showToast(t('status_fail_book'), 'error'); 
+            }
+        }
+
+        // --- Crowd-Sourcing Submission Functions ---
+
+        async function submitNewPlace(event) {
+            event.preventDefault();
+            if (!userId || userId === 'Unauthenticated') {
+                showToast(t('error_auth_required'), 'error');
+                return;
+            }
+
+            const form = event.target;
+            const name = form.elements['placeName'].value.trim();
+            const type = form.elements['placeType'].value;
+            const description = form.elements['placeDescription'].value.trim();
+            const wifi = form.elements['amenityWifi'].checked;
+            const outlets = form.elements['amenityOutlets'].checked;
+
+            if (!name || type === 'select' || !description) {
+                showToast(t('error_required_fields'), 'error');
+                return;
+            }
+
+            const submitBtn = form.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Submitting...';
+
+            try {
+                const newPlaceData = {
+                    name,
+                    type,
+                    description,
+                    wifi,
+                    outlets,
+                    suggestedBy: auth.currentUser.email || auth.currentUser.uid,
+                    suggestedByUid: auth.currentUser.uid,
+                    timestamp: new Date().toISOString(),
+                    status: 'Pending Review' // New places need to be vetted
+                };
+
+                await addDoc(collection(db, SUGGESTED_PLACES_PATH), newPlaceData);
+                
+                showToast(t('status_success_submit', t('nav_add_place')), 'success');
+                // Navigate back to home after successful submission
+                renderPage('home');
+
+            } catch (e) {
+                console.error("Error adding new place:", e);
+                showToast(t('status_fail_submit', t('nav_add_place')), 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = t('submit_btn');
+            }
+        }
+        
+        async function submitReview(event) {
+             event.preventDefault();
+            if (!userId || userId === 'Unauthenticated') {
+                showToast(t('error_auth_required'), 'error');
+                return;
+            }
+
+            const form = event.target;
+            const rating = parseInt(form.elements['reviewRating'].value, 10);
+            const comment = form.elements['reviewComment'].value.trim();
+            const placeId = form.elements['placeId'].value; 
+
+            if (isNaN(rating) || rating < 1 || rating > 5 || !comment) {
+                showToast(t('error_required_fields'), 'error');
+                return;
+            }
+            
+            const submitBtn = form.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Submitting...';
+            
+            try {
+                const reviewData = {
+                    placeId,
+                    rating,
+                    comment,
+                    reviewedBy: auth.currentUser.email || auth.currentUser.uid,
+                    reviewedByUid: auth.currentUser.uid,
+                    timestamp: new Date().toISOString(),
+                };
+
+                await addDoc(collection(db, REVIEWS_PATH), reviewData);
+                
+                showToast(t('status_success_submit', t('nav_submit_review')), 'success');
+                renderPage('home');
+
+            } catch (e) {
+                console.error("Error submitting review:", e);
+                showToast(t('status_fail_submit', t('nav_submit_review')), 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = t('review_btn');
+            }
+        }
+
+
+        // --- Filter and Simulation Functions (Unchanged) ---
+
+        /**
+         * Sets up event listeners for the filter section dynamically rendered on the Home page.
+         */
+        function setupHomeFilters() {
+            const filterSection = document.getElementById('filter-section');
+            if (!filterSection) return;
+
+             // Type filter buttons
+            filterSection.querySelectorAll('.filter-chip').forEach(button => {
+                button.removeEventListener('click', handleFilterClick);
+                button.addEventListener('click', handleFilterClick);
+            });
+
+             // Amenity checkboxes
+            filterSection.querySelectorAll('input[type="checkbox"][data-filter="amenity"]').forEach(checkbox => {
+                checkbox.removeEventListener('change', handleFilterChange);
+                checkbox.addEventListener('change', handleFilterChange);
+            });
+            
+             // Booking button delegation for dynamically rendered list
+            const locationsList = document.getElementById('locations-list');
+             if (locationsList) {
+                locationsList.removeEventListener('click', handleBookingClick);
+                locationsList.addEventListener('click', handleBookingClick);
+             }
+        }
+
+        function handleFilterClick(e) {
+            handleFilterChange(e.target.dataset.filter, e.target.dataset.value, e.target);
+        }
+
+        function handleBookingClick(e) {
+             if (e.target.classList.contains('book-spot-btn') && !e.target.disabled) {
+                const locationId = e.target.dataset.locationId;
+                const locationName = e.target.dataset.locationName;
+                bookLocation(locationId, locationName);
+            }
+        }
+
+        /**
+         * Determines the color class for the noise indicator based on dB level.
+         */
+        function getNoiseColor(db) {
+            if (db < 50) return 'bg-green-100 text-green-700'; 
+            if (db < 65) return 'bg-yellow-100 text-yellow-700';
+            return 'bg-red-100 text-red-700';
+        }
+
+        /**
+         * Renders the location cards based on current filters.
+         */
+        function renderLocations() {
+             const LIST_EL = document.getElementById('locations-list');
+             const EMPTY_STATE_EL = document.getElementById('empty-state');
+             if (!LIST_EL || !EMPTY_STATE_EL) return; // Not on home page
+
+            const filteredLocations = locationsData.filter(location => {
+                if (currentFilters.type !== 'all' && location.type !== currentFilters.type) return false;
+                if (currentFilters.wifi && !location.wifi) return false;
+                if (currentFilters.outlets && !location.outlets) return false;
+                return true;
+            });
+
+            LIST_EL.innerHTML = '';
+
+            const isAuthenticated = userId && userId !== 'Unauthenticated';
+            const isBooked = !!currentBooking;
+
+
+            if (filteredLocations.length === 0) {
+                EMPTY_STATE_EL.classList.remove('hidden');
+            } else {
+                EMPTY_STATE_EL.classList.add('hidden');
+                
+                filteredLocations.sort((a, b) => a.noiseLevel - b.noiseLevel);
+
+                filteredLocations.forEach(location => {
+                    const noiseColor = getNoiseColor(location.noiseLevel);
+                    
+                    const bookButtonText = isBooked ? t('already_booked') : t('book_spot');
+                    const wifiText = location.wifi ? t('wifi_yes') : t('wifi_no');
+                    const outletsText = location.outlets ? t('outlets_yes') : t('outlets_no');
+
+                    const bookButton = isAuthenticated ? `
+                        <button data-location-id="${location.id}" data-location-name="${location.name}" 
+                                class="book-spot-btn mt-3 w-full py-2 rounded-lg font-semibold transition-colors duration-200 shadow-md 
+                                ${isBooked ? 'bg-gray-400 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}"
+                                ${isBooked ? 'disabled' : ''}>
+                            ${bookButtonText}
+                        </button>
+                    ` : '';
+
+                    const card = `
+                        <div class="bg-white p-4 rounded-xl shadow-lg border-l-4 border-indigo-500 hover:shadow-xl transition-shadow duration-300">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <h3 class="text-xl font-bold text-gray-900">${location.name}</h3>
+                                    <p class="text-sm text-indigo-600 font-medium">${t(location.type) || location.type.charAt(0).toUpperCase() + location.type.slice(1)}</p>
+                                </div>
+                                <div class="text-right">
+                                    <span class="noise-indicator ${noiseColor}">
+                                        ${location.noiseLevel} dB
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div class="text-gray-600 text-sm mb-3">
+                                <p class="font-semibold">${t('noise_prediction')}</p>
+                                <p>${location.quietHoursPrediction}</p>
+                            </div>
+
+                            <div class="flex space-x-4 text-xs">
+                                <span class="flex items-center space-x-1 ${location.wifi ? 'text-green-600' : 'text-gray-400'}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.94V10"/><path d="M21 16c-3.13 2.05-6.88 2.05-10 0"/><path d="M6 10c-1.74 2.1-2.43 5.48-2.6 7"/><path d="M20 17c-1.74-2.1-2.43-5.48-2.6-7"/></svg>
+                                    <span>${wifiText}</span>
+                                </span>
+                                <span class="flex items-center space-x-1 ${location.outlets ? 'text-green-600' : 'text-gray-400'}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="10" x="8" y="2" rx="1"/><path d="M12 17v5"/><path d="M10 22h4"/></svg>
+                                    <span>${outletsText}</span>
+                                </span>
+                            </div>
+                            ${bookButton}
+                        </div>
+                    `;
+                    LIST_EL.insertAdjacentHTML('beforeend', card);
+                });
+            }
+        }
+
+
+        /**
+         * Handles filter button/checkbox clicks.
+         */
+        function handleFilterChange(filterType, value, element) {
+            if (filterType === 'type') {
+                currentFilters.type = value;
+                
+                // Update visuals (only required if not re-rendering the whole page, but good practice)
+                document.querySelectorAll('.filter-chip[data-filter="type"]').forEach(chip => {
+                    chip.classList.remove('active', 'bg-indigo-500', 'text-white');
+                    chip.classList.add('bg-gray-100', 'text-gray-700');
+
+                    if (chip.dataset.value === value) {
+                        chip.classList.add('active', 'bg-indigo-500', 'text-white');
+                        chip.classList.remove('bg-gray-100', 'text-gray-700');
+                    }
+                });
+
+            } else if (filterType === 'amenity') {
+                currentFilters[value] = element.checked;
+            }
+            renderLocations();
+        }
+
+        async function checkAndSeedData() {
+            const q = query(collection(db, PUBLIC_COLLECTION_PATH));
+            const snapshot = await getDocs(q);
+
+            if (snapshot.empty) {
+                console.log("Seeding initial mock data...");
+                const mockLocations = [
+                    { id: "lib001", name: "Central City Library Reading Room", type: "library", wifi: true, outlets: true, noiseLevel: 42, quietHoursPrediction: "Very Quiet: 10 AM - 1 PM" },
+                    { id: "cafe002", name: "The Quiet Bean Coffee", type: "cafe", wifi: true, outlets: true, noiseLevel: 58, quietHoursPrediction: "Moderate: 2 PM - 5 PM" },
+                    { id: "park003", name: "Riverside Park South Lawn", type: "park", wifi: false, outlets: false, noiseLevel: 48, quietHoursPrediction: "Quiet: 7 AM - 9 AM, 6 PM - 8 PM" },
+                    { id: "lib004", name: "University Main Hall Lobby", type: "library", wifi: true, outlets: false, noiseLevel: 68, quietHoursPrediction: "Loud: Currently class break time" },
+                    { id: "cafe005", name: "Digital Nomad Hub", type: "cafe", wifi: true, outlets: true, noiseLevel: 62, quietHoursPrediction: "Moderate: All Day (High chatter)" },
+                    { id: "cowork006", name: "The Silent Hive Co-work", type: "coworking", wifi: true, outlets: true, noiseLevel: 45, quietHoursPrediction: "Quiet: Designated quiet zones all day" },
+                ];
+                for (const location of mockLocations) {
+                    await setDoc(doc(db, PUBLIC_COLLECTION_PATH, location.id), location);
+                }
+                STATUS_EL.textContent = t('status_data_loaded');
+            } else {
+                STATUS_EL.textContent = t('status_data_loaded');
+            }
+        }
+
+        function setupRealTimeListener() {
+            onSnapshot(collection(db, PUBLIC_COLLECTION_PATH), (snapshot) => {
+                locationsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                console.log("Real-time public data update received.", locationsData.length, "locations.");
+                if (currentPage === 'home') {
+                    renderLocations();
+                }
+            }, (error) => {
+                console.error("Firestore Listener Error:", error);
+                STATUS_EL.textContent = `Listener Error: ${error.message}`;
+            });
+        }
+
+        function startNoiseSimulation() {
+            if (window.noiseSimulationInterval) clearInterval(window.noiseSimulationInterval); 
+
+            window.noiseSimulationInterval = setInterval(async () => {
+                if (locationsData.length === 0) return;
+
+                const randomIndex = Math.floor(Math.random() * locationsData.length);
+                const randomLocation = locationsData[randomIndex];
+
+                const fluctuation = (Math.random() * 10) - 5; 
+                let newNoiseLevel = Math.round(randomLocation.noiseLevel + fluctuation);
+                
+                newNoiseLevel = Math.max(35, Math.min(75, newNoiseLevel));
+                
+                const locationRef = doc(db, PUBLIC_COLLECTION_PATH, randomLocation.id);
+
+                try {
+                    await updateDoc(locationRef, {
+                        noiseLevel: newNoiseLevel
+                    });
+                } catch (e) {
+                    console.error("Simulation update failed (likely permission issue or transient error):", e);
+                }
+            }, 6000); 
+        }
+
+        // --- Auth & UI Functions (Preserved) ---
+        async function signInWithGoogle() {
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+                console.log("Signed in with Google successfully.");
+            } catch (error) {
+                console.error("Google Sign-In error:", error);
+                showToast(t('sign_in_fail', error.code === 'auth/popup-closed-by-user' ? 'Popup closed.' : 'Error occurred.'), 'error');
+            }
+        }
+
+        async function signOutUser() {
+            try {
+                await signOut(auth);
+                console.log("User signed out.");
+            } catch (error) {
+                console.error("Sign out error:", error);
+            }
+        }
+
+        function updateAuthUI(user) {
+            AUTH_CONTROLS_EL.innerHTML = '';
+            
+            if (user && user.uid) {
+                const displayName = user.displayName || user.email || 'QuietSpace User';
+                const initial = displayName.charAt(0).toUpperCase();
+                
+                AUTH_CONTROLS_EL.innerHTML = `
+                    <div class="relative group">
+                        <div id="profile-display" 
+                             class="flex items-center space-x-2 p-1.5 bg-white bg-opacity-20 rounded-full cursor-pointer hover:bg-opacity-30 transition-all duration-150">
+                            <!-- Avatar/Initial -->
+                            <div class="w-8 h-8 rounded-full bg-indigo-200 text-indigo-800 font-bold text-sm flex items-center justify-center shadow-inner">
+                                ${initial}
+                            </div>
+                            <!-- Name (hidden on small screens) -->
+                            <span class="hidden md:inline text-white font-medium text-sm pr-2">${displayName.split(' ')[0]}</span>
+                        </div>
+                        
+                        <!-- Simple Profile Card Dropdown/Tooltip -->
+                        <div class="absolute right-0 top-10 w-48 bg-white text-gray-800 p-3 rounded-lg shadow-xl hidden group-hover:block group-focus-within:block z-20 transition-opacity duration-200 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 origin-top-right">
+                            <p class="text-sm font-semibold truncate">${displayName}</p>
+                            <p class="text-xs text-gray-500 truncate mt-0.5">${user.email || 'Email unavailable'}</p>
+                            <hr class="my-2">
+                            <button id="sign-out-btn-dropdown" class="w-full text-left text-sm text-red-600 hover:text-red-700 font-medium">
+                                ${t('sign_out')}
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('sign-out-btn-dropdown').addEventListener('click', signOutUser);
+
+                userId = user.uid;
+                if (USER_ID_EL) USER_ID_EL.textContent = userId;
+                STATUS_EL.textContent = `${t('welcome')}${displayName.split(' ')[0]}!`; 
+
+            } else {
+                AUTH_CONTROLS_EL.innerHTML = `
+                    <button id="google-sign-in-btn" class="bg-white hover:bg-gray-100 text-indigo-600 text-sm font-semibold px-3 py-1 rounded-lg transition-colors duration-200 shadow-md flex items-center space-x-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M12.24 10.27v3.08h6.14a7.99 7.99 0 0 1-2.2 4.96c-1.8 1.54-4.22 2.45-6.94 2.45-5.74 0-10.4-4.66-10.4-10.4S6.5 2.8 12.24 2.8c2.91 0 5.43 1.25 7.23 3.06l2.17-2.17C19.78 1.9 16.27.8 12.24.8 5.71.8.56 5.96.56 12.5s5.15 11.7 11.68 11.7c4.71 0 8.84-2.82 10.74-7.07L22 14h-9.76V10.27z"/></svg>
+                        <span>${t('sign_in')}</span>
+                    </button>
+                `;
+                document.getElementById('google-sign-in-btn').addEventListener('click', signInWithGoogle);
+
+                userId = 'Unauthenticated';
+                if (USER_ID_EL) USER_ID_EL.textContent = '...';
+                STATUS_EL.textContent = t('status_sign_in_prompt');
+            }
+            // Re-apply static translations after dynamic auth content changes
+            applyTranslations(); 
+        }
+
+        // --- Firebase/App Initialization ---
+
+        async function initializeAppAndFirebase() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                STATUS_EL.textContent = "Error: Firebase configuration is missing.";
+                return;
+            }
+            
+            LANG_SWITCHER_EL.value = currentLang;
+
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // Show initial content immediately
+                renderPage(currentPage);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        updateAuthUI(user);
+
+                        if (!isAuthReady) {
+                            await checkAndSeedData();
+                            setupRealTimeListener();
+                            startNoiseSimulation(); 
+                            isAuthReady = true; 
+                        }
+                        setupUserBookingsListener(); 
+
+                    } else {
+                        updateAuthUI(null);
+                        
+                        if (!isAuthReady) {
+                             STATUS_EL.textContent = t('status_loading'); 
+                             if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                             } else {
+                                await signInAnonymously(auth);
+                             }
+                        }
+                    }
+                    // Re-render the current page to update auth-dependent elements (like booking section)
+                    renderPage(currentPage);
+                });
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                STATUS_EL.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        // --- Global Event Listeners ---
+        window.addEventListener('load', () => {
+            initializeAppAndFirebase();
+
+            // Navigation bar event listener
+            MOBILE_NAV_EL.addEventListener('click', (e) => {
+                const navItem = e.target.closest('.nav-item');
+                if (navItem && navItem.dataset.page) {
+                    e.preventDefault();
+                    renderPage(navItem.dataset.page);
+                }
+            });
+
+            // Language Switcher Listener
+            LANG_SWITCHER_EL.addEventListener('change', (e) => {
+                currentLang = e.target.value;
+                localStorage.setItem('quietSpaceLang', currentLang);
+                applyTranslations();
+            });
+
+            // Expose renderPage to the global scope for utility buttons
+            window.renderPage = renderPage; 
+        });
+    </script>
+</body>
+</html>
